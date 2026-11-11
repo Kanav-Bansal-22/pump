@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { ClientBase } from "pg";
-import { Errors } from "./errors";
+import { Blocked, Errors } from "./errors";
 
 const KEY_RE = /^[A-Za-z0-9_-]{16,100}$/;
 
@@ -39,6 +39,8 @@ export async function runIdempotent<T>(
     return { replayed: true, response: row.response as T };
   }
   const response = await fn();
+  // A refused request is not "used up": the person fixes the value and tries again.
+  if (response instanceof Blocked) return { replayed: false, response };
   await c.query(
     "INSERT INTO idempotency_keys (key, user_id, endpoint, request_hash, status_code, response) VALUES ($1,$2,$3,$4,200,$5)",
     [o.key, o.userId, o.endpoint, h, JSON.stringify(response ?? null)],

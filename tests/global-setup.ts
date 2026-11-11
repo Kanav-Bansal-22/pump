@@ -37,10 +37,14 @@ export default async function setup(project: TestProject) {
     superUser: "postgres",
     superPassword: SUPER_PW,
     // pump_test: shared by most tests. pump_test_clean: pristine (no users, no site) for first-run tests.
-    databases: ["pump_test", "pump_test_clean"],
+    // pump_test_meters: one pump layout, used by the meter tests.
+    // pump_test_backup: backup -> restore round trip.
+    // pump_test_money: one full register day (entries, count, lock).
+    // pump_test_import: opening-balance import.
+    databases: ["pump_test", "pump_test_clean", "pump_test_meters", "pump_test_backup", "pump_test_money", "pump_test_import"],
     passwords: TEST_PASSWORDS,
   });
-  for (const database of ["pump_test", "pump_test_clean"])
+  for (const database of ["pump_test", "pump_test_clean", "pump_test_meters", "pump_test_backup", "pump_test_money", "pump_test_import"])
     await migrate({ host: "127.0.0.1", port: PORT, migratorPassword: TEST_PASSWORDS.pump_migrator, database }, () => {});
   project.provide("db", { host: "127.0.0.1", port: PORT, database: "pump_test", superPassword: SUPER_PW, ...TEST_PASSWORDS });
 

@@ -4,7 +4,10 @@ import { inject } from "vitest";
 type Who = "app" | "owner" | "backup" | "super";
 
 /** Connects as one of the real database roles. "owner" = pump_migrator with SET ROLE pump_owner. */
-export async function connect(who: Who, database?: "pump_test" | "pump_test_clean"): Promise<Client> {
+export async function connect(
+  who: Who,
+  database?: "pump_test" | "pump_test_clean" | "pump_test_meters" | "pump_test_backup" | "pump_test_money" | "pump_test_import" | "pump_restored",
+): Promise<Client> {
   const db = { ...inject("db"), ...(database ? { database } : {}) };
   const cfg = {
     app: { user: "pump_app", password: db.pump_app },
@@ -50,13 +53,14 @@ export async function getFixture(): Promise<Fixture> {
       "INSERT INTO users (name, username, password_hash, role_code) VALUES ('Owner T','owner_t','x','OWNER') RETURNING id");
     const staff = await c.query(
       "INSERT INTO users (name, username, password_hash, role_code) VALUES ('Staff T','staff_t','x','STAFF') RETURNING id");
+    const cust = await c.query("INSERT INTO parties (kind, name, created_by) VALUES ('CUSTOMER','ABC Transport',$1) RETURNING id", [owner.rows[0].id]);
+    const supp = await c.query("INSERT INTO parties (kind, name, created_by) VALUES ('SUPPLIER','HPCL',$1) RETURNING id", [owner.rows[0].id]);
     fixture = {
       siteId: site.rows[0].id,
       ownerId: owner.rows[0].id,
       staffId: staff.rows[0].id,
-      // parties tables arrive in Phase 4; ledger accepts any party UUID for now
-      customerId: "11111111-1111-4111-8111-111111111111",
-      supplierId: "22222222-2222-4222-8222-222222222222",
+      customerId: cust.rows[0].id,
+      supplierId: supp.rows[0].id,
     };
     return fixture;
   } finally {

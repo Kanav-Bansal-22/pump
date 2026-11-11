@@ -23,6 +23,23 @@ Phases follow the master prompt (Part 18). A phase is **complete only when its e
   - [ ] PIN quick-login (deferred to Phase 6; Chrome's saved password covers it for go-live)
   - [ ] Daily rates screen (moved to Phase 3 with the meter tables)
   - [ ] SSE live updates
+  - [x] Backups (2026-11-11): `npm run backup` (pg_dump as read-only role → archive verified with pg_restore --list → SHA-256 → hash-linked `backups/manifest.jsonl` with meter chain heads → backup_log → pruning 48 h hourly / 30 daily + 12 monthly / 20 manual); owner "Back up now", backup list, download-to-phone (recorded), health card, red home warning after 26 h; restore round-trip test (TC-31)
+  - [x] Scheduled backups registered on the server laptop (owner OK 2026-11-11): "PetrolPump Nightly Backup" daily 02:00; "PetrolPump Hourly Backup" daily 07:00 repeating hourly for 16 h; run on battery, catch up missed runs, 30-min limit; test run via Task Scheduler succeeded (result 0, file written, 0 chain problems). Log: `backups/task.log`
+- [ ] Phase 3 — Meter and fuel management **(core done for go-live 1)**
+  - [x] Migration 0007: daily rates (append-only, reason to change, locked-day guard), meter epochs, hash-chained append-only meter points, testing fuel + voids, blocked-attempt log, flags + owner review, segments view, chain verification + heads
+  - [x] Business day 08:00 with closing window 05:00–11:00 (settings; reading time still to be confirmed)
+  - [x] Staff entry: board, automatic opening, numeric entry, check screen (litres × rate = value), save; rules H1–H5 + duplicate-day block; flags zero / high / low / impossible rate / missed days; refused values logged at check and at save
+  - [x] Owner: daily rates, starting readings (typed twice), day sheet like the register (missing nozzles in red, provisional marked), review queue
+  - [x] 25 meter tests incl. register page 224 figures, TC-01..03, TC-07, TC-08 maths, TC-18, TC-19, TC-22/34, INV-11; browser check on demo DB
+  - [ ] Meter events workflow (rollover / reset / replacement approval), corrections with approver, test-pour screen, multi-day allocation, price change inside the day, dip/stock (postponed by owner)
+- [ ] Phase 4 — Accounting **(go-live 1 subset done, 2026-11-11)**
+  - [x] Migration 0008: parties (customer / supplier / lender / staff), money entries (13 kinds = every Rokad line), reversals, cash counts, day snapshots, locked-day guard on readings, accounts 1150 (cash handed to owner) and 1200 (bank)
+  - [x] Posting service: each entry posts its balanced journal in the same transaction; mode → cash / UPI clearing / card clearing / bank; owner-only kinds; day choice inside the 8–11 AM window; duplicate-phone check; owner cancel = exact reversal
+  - [x] Day balance in the register's order; blind cash count (staff see figures only after counting); submit; owner send-back; owner lock with guards (missing readings, open flags: override with reason; missing rate / udhari > sales: never), posting fuel revenue (confirmed → 4100/4110, provisional → 4190), cash sales, short/excess → suspense, counted cash → owner; fuel-sales control asserted zero; snapshot + 8-char integrity code
+  - [x] Screens: Udhari given / received, Payment / expense, Lube / other receipt, Close day, Udhari list with outstanding, customer statement (print / save as PDF)
+  - [x] 10 money tests on the register-page-224 day (79 total passing); browser check on demo DB; production build + `next start` smoke test
+  - [x] Customer opening-balance import (2026-11-11): migration 0009 (import batches with state machine and file SHA-256, rows, results, one opening balance per customer); Excel template; .xlsx / .csv with flexible headers; amounts with Indian commas, minus / "Cr" / brackets = advance; preview marks NEW / MATCH_EXISTING (phone, else unique exact name) / ERROR (missing or bad amount, bad phone, duplicates in file, template example row, ambiguous name, customer already has an old balance); confirm only with zero problem rows and the old register total equal to the file total; same file never twice; OPENING_BALANCE journals (never revenue); one-off "Add old balance" on a customer statement; 17 tests; browser check on demo DB
+  - [ ] Supplier bills (HPCL invoices), UPI/card split + settlements (postponed by owner), post-lock corrections, statement PDF file + WhatsApp share
   - [ ] Backup script + phone download + health card
 - [ ] Phase 3 — Meter and fuel management
 - [ ] Phase 4 — Accounting

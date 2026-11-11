@@ -18,8 +18,13 @@
 | Q10d | Go-live **around 15 Nov 2026** | See IMPLEMENTATION_ROADMAP §0 (staged go-live). |
 | Q11 | Cashbook photo provided; left = udhari given, right = sales + udhari received; "the inputs in the photo are everything" | `CASHBOOK_MAPPING.md`. The app's daily inputs are limited to that list. |
 
+### Found while building (2026-11-11)
+- **Old udhari balances are needed on go-live day, not later.** Without them, a customer repaying old udhari shows as having an *advance*, and the outstanding total is wrong. *Built:* Owner → Import old udhari (Excel template, preview, register-total check) and "Add old balance" on any customer's page. If a customer repays before the import, the import matches them by phone / name and the advance disappears.
+- **Cash handover assumption:** the register has no opening cash, so at day lock the counted cash is recorded as handed to the owner and the next day starts at zero. If cash actually stays in the drawer overnight, this is one setting (`cash_handover_at_close`).
+
 ### Still open after these answers
 - **Q3b** At what time is the daily reading written: 8 AM (with the price change) or at night?
+  *Built meanwhile (changeable in settings):* business day 08:00 → 08:00; a reading taken 05:00–11:00 closes the previous business day and is valued at that day's rate. If readings are taken at night, the setting changes and an extra 8 AM rate-boundary reading is added.
 - **Scope:** your original requirements included **UPI/card split, tank dips & stock, supplier (HPCL) ledger, meter photos and opening verification**, none of which appear in the register. Keep each in v1, or postpone? Until you answer, they are **postponed, not deleted**: the database supports them and they can be switched on later.
 - ~~Go-live~~ **Answered:** staged go-live around 15 Nov, paper register kept in parallel (owner, 2026-11-11).
 - **A1** "Same for every employee" is read as *same screens* with **individual logins**. Do you instead mean one shared login? Not recommended: you could no longer see who entered what.

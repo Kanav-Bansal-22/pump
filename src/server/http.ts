@@ -4,7 +4,7 @@ import type { PoolClient } from "pg";
 import { z } from "zod";
 import { getSessionUser, type SessionUser } from "./auth/service";
 import { pool, withTx } from "./db";
-import { AppError, Errors, fromDbError } from "./errors";
+import { AppError, Blocked, Errors, fromDbError } from "./errors";
 import { runIdempotent } from "./idempotency";
 
 export const SESSION_COOKIE = "pump_session";
@@ -73,7 +73,7 @@ export function errorResponse(e: unknown, requestId: string): NextResponse<ApiEr
   );
 }
 
-type Handler<I, O> = (ctx: { c: PoolClient; user: SessionUser; input: I; req: NextRequest; requestId: string }) => Promise<O>;
+type Handler<I, O> = (ctx: { c: PoolClient; user: SessionUser; input: I; req: NextRequest; requestId: string }) => Promise<O | Blocked>;
 
 /**
  * Wraps an authenticated JSON POST route:
@@ -109,7 +109,8 @@ export function apiPost<S extends z.ZodType, O>(
         if (!opts.idempotent) return { replayed: false, response: await run() };
         return runIdempotent(c, { key: req.headers.get("idempotency-key"), userId: user.id, endpoint: opts.endpoint, body: parsed.data }, run);
       });
-      return NextResponse.json({ ok: true, data: result.response, ...(result.replayed ? { replayed: true } : {}) });
+      if (result.response instanceof Blocked) return errorResponse(result.response.error, requestId);
+      return NextResponse.json({ ok: true, data: result.response as O, ...(result.replayed ? { replayed: true } : {}) });
     } catch (e) {
       return errorResponse(e, requestId);
     }

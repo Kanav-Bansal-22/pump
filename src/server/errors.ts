@@ -10,6 +10,14 @@ export class AppError extends Error {
   }
 }
 
+/**
+ * Returned (not thrown) by a handler when the request must be refused but the evidence written in the
+ * same transaction (e.g. a blocked meter attempt) must still be committed. The client sees NOT saved.
+ */
+export class Blocked {
+  constructor(public error: AppError) {}
+}
+
 export const Errors = {
   notLoggedIn: () => new AppError("NOT_LOGGED_IN", 401, "Please log in again.", "कृपया फिर से लॉगिन करें।"),
   forbidden: () => new AppError("FORBIDDEN", 403, "You are not allowed to do this.", "आपको यह करने की अनुमति नहीं है।"),
