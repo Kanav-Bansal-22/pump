@@ -1,0 +1,294 @@
+# Petrol Pump Management System: Phase 1 Architecture Package
+
+Status: **for approval, no code written yet.**
+
+## 0. Open items (only the essentials)
+
+1. **Handwritten cashbook photo**: no image came through with the message, only the text spec. I have NOT studied your existing format. Please re-attach it. Until then, the Receipts/Payments layout below is my assumption: a two-sided cashbook (receipts left, payments right) with daily totals.
+2. **Laptop OS**: Windows, Linux or macOS? This decides auto-start (Windows Service/Task Scheduler vs systemd) and backup scripts. I assume **Windows 10/11** below.
+3. **Selling price**: is it set per fuel per day (owner enters when the rate changes), or per nozzle? Assumed: per fuel type, with effective-date history.
+4. **Cash model**: do employees hand over cash per shift or per day? Assumed: one daily shift per station, multiple shifts optional.
+5. **GST/invoicing**: do credit customers need GST invoices, or only statements? Assumed: statements and receipts only (no GST invoicing in v1).
+
+---
+
+## 1. System architecture
+
+```
+ Phones (PWA)  ──Wi-Fi──►  Laptop 192.168.1.100 (reserved in router)
+ Father / staff            ┌───────────────────────────────────────┐
+                           │ Next.js 14 (App Router, TypeScript)   │
+                           │  • UI (React + Tailwind + Recharts)   │
+                           │  • Route handlers /api/* (all money   │
+                           │    logic lives HERE, never in browser)│
+                           │  • SSE endpoint /api/live (events)    │
+                           │ PostgreSQL 16 (localhost only)        │
+                           │  • LISTEN/NOTIFY → SSE fan-out        │
+                           │ File store: ./data/uploads            │
+                           │ Backup job (nightly) → ./backups +    │
+                           │  external drive                       │
+                           └───────────────────────────────────────┘
+```
+
+**Choices and why**
+- **One Node process + one Postgres.** No microservices. Everything is in one repo.
+- **ORM**: Prisma for typed access, plus hand-written SQL migrations for constraints, triggers and views (the ledger rules need them).
+- **Live updates**: Server-Sent Events fed by Postgres `NOTIFY`. SSE is simpler and more reliable than WebSockets for one-way dashboard updates, and phones auto-reconnect after Wi-Fi drops. Writes go through normal HTTPS-style POSTs.
+- **Auth**: username + password (argon2id), server-side sessions in DB, HTTP-only cookies, login rate limiting. Optional 4-6 digit PIN for staff for quick re-login on the same device.
+- **PDF**: `@react-pdf/renderer` or `pdfmake` (both free). **Excel**: ExcelJS. **Charts**: Recharts.
+- **PWA**: manifest + service worker caching the app shell. **Money entry is never queued offline** (see loophole L4). If Wi-Fi is down the app shows "No connection, entry NOT saved".
+- **Packaging**: Docker Compose is the most portable (laptop migration = copy folder + restore backup). If Docker on a low-spec laptop is a concern, fallback is native Postgres + Node with PM2/NSSM. Decide after the OS answer.
+- **HTTPS on LAN**: PWA install and service workers need a secure context. `http://192.168.1.100` is not one. Solution: local HTTPS with a self-signed/`mkcert` CA installed on each phone (guide provided), or Caddy reverse proxy. This is a real risk, so it is covered in the deployment plan.
+- **Future hooks** (not built in v1): `payment_events` table (raw imported provider data), `integrations` config, a job runner, Tailscale for remote access (database never exposed publicly).
+
+**Project structure**
+```
+petrolpump/
+  docker-compose.yml  .env.example
+  prisma/ schema.prisma  migrations/ (SQL incl. triggers/views)
+  src/
+    app/ (pages)  app/api/ (route handlers)
+    server/
+      ledger/ (posting engine)  cash/  meters/  stock/  closing/
+      reports/  import/  audit/  auth/  events/
+    components/  lib/money.ts (decimal helpers)
+  tests/ (unit + integration + concurrency)
+  scripts/ backup.ps1 restore.ps1 healthcheck.ps1
+  docs/ INSTALL.md RESTORE.md MIGRATE.md
+```
+
+---
+
+## 2. Database schema (PostgreSQL)
+
+**Global conventions**
+- Money: `NUMERIC(14,2)`. Litres: `NUMERIC(12,3)`. Meter readings: `NUMERIC(12,2)`. Rates: `NUMERIC(8,2)`. **No floats anywhere.**
+- Every table: `id UUID PK`, `created_at`, `created_by`. Financial tables are **append-only**: `UPDATE`/`DELETE` revoked from the app DB role; corrections are new rows.
+- Every business-day record carries `station_id` and `business_date`.
+- Every write endpoint carries a client-generated `idempotency_key UNIQUE`.
+
+### 2.1 Access & config
+| Table | Key columns |
+|---|---|
+| `roles` | id, name (OWNER/MANAGER/EMPLOYEE), permissions JSONB (configurable for Manager) |
+| `users` | id, name, username UNIQUE, password_hash, role_id, active, pin_hash, last_login |
+| `sessions` | id, user_id, expires_at, device_info |
+| `user_stations` | user_id, station_id (which stations a user may touch) |
+| `stations` | id, name, code UNIQUE, address, active, shifts_enabled |
+| `fuel_types` | id, name (Petrol/Diesel/…), unit |
+| `fuel_prices` | id, station_id, fuel_type_id, price, effective_from; UNIQUE(station, fuel, effective_from) |
+| `shifts` | id, station_id, name, start_time, end_time |
+| `nozzles` | id, station_id, tank_id, fuel_type_id, number, active; UNIQUE(station_id, number) |
+| `payment_modes` | id, code (CASH/UPI/PAYTM/DEBIT/CREDIT_CARD/BANK/CUSTOMER_CREDIT/OTHER), is_cash, is_digital, needs_settlement |
+| `categories` | id, kind (RECEIPT/EXPENSE), name, system BOOL, active (supports custom) |
+| `bank_accounts` | id, name, account_last4, opening_balance |
+| `settings` | key, value JSONB (thresholds, credit rules, business name for statements) |
+
+### 2.2 Sales & meters
+| Table | Key columns |
+|---|---|
+| `meter_readings` | id, nozzle_id, station_id, business_date, shift_id NULL, **opening_reading, closing_reading**, litres_gross GENERATED?, testing_litres, litres_net, price_applied, sales_amount, employee_id, status (OK/FLAGGED/APPROVED), flag_reason, event_type (NORMAL/RESET/ROLLOVER/REPLACEMENT), supersedes_id NULL, idempotency_key. UNIQUE(nozzle_id, business_date, shift_id) among non-superseded rows. |
+| `nozzle_meter_events` | id, nozzle_id, type (RESET/ROLLOVER/REPLACEMENT), old_final, new_start, max_digits, approved_by, reason |
+| `daily_sales_collections` | id, station_id, business_date, shift_id, employee_id, mode_id, amount (the non-cash split employees declare; cash is derived) |
+
+### 2.3 Cash, receipts, payments
+| Table | Key columns |
+|---|---|
+| `receipts` | id, station_id, business_date, category_id, mode_id, amount CHECK(>0), particulars, customer_id NULL, ledger_ref, remarks, employee_id, idempotency_key, voided_by_id NULL, **posting_class** (SALE_COLLECTION / UDHARI_SETTLEMENT / OTHER_INCOME / BANK / MISC) |
+| `payments` | id, station_id, business_date, category_id, mode_id, amount CHECK(>0), paid_to, invoice_no, supplier_id NULL, remarks, attachment_id NULL, employee_id, idempotency_key |
+| `attachments` | id, path, mime, sha256, size, uploaded_by |
+| `internal_transfers` | id, business_date, from_type/from_id, to_type/to_id (cash drawer ↔ bank, station ↔ station), amount, reference |
+| `cash_days` | id, station_id, business_date, opening_cash, expected_cash, actual_cash, difference, status (OPEN/SUBMITTED/APPROVED/LOCKED), submitted_by, approved_by, locked_by, locked_at; UNIQUE(station_id, business_date) |
+| `cash_adjustments` | id, cash_day_id, type (SHORTAGE/EXCESS), amount, resolution (PENDING/WRITTEN_OFF/RECOVERED_FROM_STAFF), approved_by. Shortage is never auto-expensed. |
+
+### 2.4 Customers (Udhari) & suppliers
+| Table | Key columns |
+|---|---|
+| `customers` | id, name, phone, address, gst_no, credit_limit, station_id NULL, active; INDEX on name, phone; no balance column |
+| `customer_vehicles` | customer_id, vehicle_no |
+| `customer_ledger` | id, customer_id, station_id, entry_date, **entry_type** (OPENING_BALANCE / CREDIT_SALE / SETTLEMENT / ADJUSTMENT / REVERSAL), **debit, credit** (NUMERIC, one is 0), particulars, fuel_type_id NULL, litres NULL, vehicle_no NULL, receipt_id NULL, reverses_id NULL, import_batch_id NULL, employee_id, idempotency_key. Append-only. |
+| `v_customer_balance` (view) | customer_id, SUM(debit) - SUM(credit) = outstanding (positive owes us, negative = advance) |
+| `import_batches` | id, file_hash UNIQUE, status (PREVIEW/CONFIRMED/CANCELLED), total_amount, row_count, confirmed_by, reconciled_flag, reconciled_by, summary JSONB |
+| `import_rows` | batch_id, row_no, raw JSONB, parsed fields, status (VALID/DUPLICATE/ERROR), error |
+| `suppliers` | id, name, phone, gst_no, payment_terms_days |
+| `supplier_ledger` | like customer_ledger but credit = we owe: entry_type (OPENING/BILL/PAYMENT/ADJUSTMENT/REVERSAL), bill_id, payment_id, due_date |
+| `supplier_bills` | id, supplier_id, bill_no, bill_date, amount, due_date, fuel_delivery_id NULL; UNIQUE(supplier_id, bill_no) |
+
+### 2.5 Stock
+| Table | Key columns |
+|---|---|
+| `tanks` | id, station_id, fuel_type_id, name, capacity, active |
+| `tank_calibration` | tank_id, dip_mm, volume_litres |
+| `fuel_deliveries` | id, tank_id, supplier_id, bill_id, delivery_date, invoice_no, qty_invoiced, qty_received, rate, density, temperature, water_dip_mm, employee_id |
+| `dip_readings` | id, tank_id, business_date, shift_id, dip_mm, litres_from_chart, water_mm, book_stock, variation, flagged, employee_id |
+
+### 2.6 Employees
+`employees` (user_id NULL, name, phone, station_id, default_shift_id, salary, active), `attendance` (employee_id, date, status), `salary_advances` (employee_id, date, amount, recovered_amount), `salary_payments` (links to `payments`).
+
+### 2.7 Settlement, audit, ops
+| Table | Key columns |
+|---|---|
+| `settlement_records` | id, mode_id, business_date_from/to, expected_gross, charges, refunds, net_expected, net_received, bank_account_id, bank_date, reference, status (PENDING/MATCHED/DISCREPANCY) |
+| `payment_events` | (future) raw provider events, source, external_ref UNIQUE, parsed JSONB, matched_entry_id |
+| `audit_log` | id, ts, user_id, action, table_name, record_id, old_value JSONB, new_value JSONB, reason, approver_id, ip, device |
+| `corrections` | id, target_table, target_id, reversal_id, replacement_id, reason, requested_by, approved_by, after_lock BOOL |
+| `daily_locks` | station_id, business_date, locked_by, locked_at, snapshot_hash |
+| `backup_log` | id, started_at, finished_at, path, size, sha256, external_copy_ok, verified_ok, error |
+| `app_errors` | id, ts, level, message, stack, user_id |
+
+### 2.8 Key database-level protections
+- `CHECK (debit >= 0 AND credit >= 0 AND (debit = 0 OR credit = 0))` on ledgers.
+- `CHECK (closing_reading >= opening_reading OR event_type <> 'NORMAL')` for meters.
+- Triggers block `UPDATE`/`DELETE` on financial tables (belt and braces beyond role grants).
+- Trigger blocks inserts/updates into any (station, date) present in `daily_locks`, except via the owner "post-lock correction" function which writes a dated correction and flags the day "reopened by correction".
+- Opening reading of a meter row must equal the previous closing for that nozzle (enforced in the posting service inside a transaction with `SELECT ... FOR UPDATE` on the nozzle row; exceptions require a meter event record).
+- Customer credit-limit check runs under `pg_advisory_xact_lock(customer_id)` so two phones cannot both slip under the limit.
+
+---
+
+## 3. Accounting workflow
+
+### 3.1 The five concepts are kept separate
+| Concept | Source of truth | Never mixed with |
+|---|---|---|
+| **Revenue (sales)** | Meter litres_net × price (+ lubricant sales entries) | Collections |
+| **Collections** | Receipts/declared collections by payment mode | Revenue |
+| **Receivables** | `customer_ledger` | Revenue |
+| **Expenses** | `payments` (category = expense) | Supplier payments, transfers |
+| **Cash flow / Profit** | Cashbook / (Revenue − COGS − Expenses) | Each other |
+
+### 3.2 Daily flow (per station)
+1. **Meter readings**: opening is auto-filled from the previous closing. Employee enters the closing reading and testing litres. System computes `litres_net = closing − opening − testing` and `sales = litres_net × price_applied` (price locked from `fuel_prices` effective that date).
+   Example: 25,450.50 − 25,000 = 450.50 L × ₹94 = **₹42,347.00**.
+   *(Testing: fuel drawn for quality/quantity tests is returned to the tank, so it is deducted from sales litres. Confirm that your station returns it.)*
+2. **Sales split**: station total sales = Cash + UPI/Paytm + Card + Customer credit (+ other). Employee declares the non-cash parts and the credit entries come from Udhari entries; **cash sales is the derived balancing figure**, then checked against physical cash at closing. This avoids double entry of sales as both a "meter sale" and a "receipt".
+   - `Declared splits must sum to Sales Value`, otherwise the day cannot be submitted.
+3. **Credit sale (udhari)**: creates a `customer_ledger` DEBIT (type CREDIT_SALE) with fuel, litres, vehicle, station, employee. It is **part of that day's sales split**, not extra revenue.
+4. **Customer repayment**: creates a `receipts` row (posting_class = UDHARI_SETTLEMENT) **and** a ledger CREDIT, in one DB transaction. It adds to cash/UPI collections but **is excluded from fuel revenue** by posting_class.
+5. **Other receipts/payments**: entered as per the cashbook; every row has a mode. Cash-mode rows hit the cashbook; digital rows hit the settlement tracker.
+6. **Internal transfers** (cash→bank deposit, bank→cash withdrawal): produce paired movements, **excluded from income and expense reports**.
+7. **Daily closing**: `Expected cash = Opening + cash receipts (incl. cash sales derived, cash udhari repayments, other cash income) − cash payments − bank deposits + bank withdrawals`. Employee enters actual cash. Difference ≠ 0 is highlighted and opens a `cash_adjustment` for owner decision. **Not auto-expensed.**
+8. **Tank reconciliation**: `Book closing = Opening + Received − Net sales (litres)`. Variation vs dip is flagged if beyond a configurable tolerance (default 0.5% of throughput; owner-editable).
+9. **Owner review → Lock.** After locking, only the owner can post correction entries, which are dated and shown on the day with a "Corrected after lock" marker.
+
+### 3.3 UPI / digital settlement (no double counting)
+- A UPI sale is recognised **once**, on the sale date, as a collection with mode UPI and status "pending settlement".
+- When the bank credit arrives, the owner/manager records a `settlement_record` linking the **batch of collections** to the bank credit. This changes status only and creates no new income. Differences (charges/refunds) are booked as expense/refund entries explicitly.
+
+### 3.4 Corrections
+Never edit or delete. Correct = **reversal row + replacement row**, both linked in `corrections`, with the reason mandatory. Employees can request a correction on the same open day; the owner or manager approves. After lock, only the owner.
+
+### 3.5 Opening balance import
+Each imported customer yields **one** `customer_ledger` row: `entry_type = OPENING_BALANCE`, debit = outstanding (or credit for advances), no invented historical date (uses a configurable "migration date" label). Excluded from sales/revenue reports. The batch stores a SHA-256 of the file; re-uploading the same file is blocked. Import needs the owner's confirmation with the typed total. The batch remains "unreconciled" until the owner ticks that the total matches the handwritten registers.
+
+---
+
+## 4. Pages & navigation
+
+Bottom tab bar on mobile (5 most-used) + "More" drawer. Hindi/English labels, e.g. "Receipts / प्राप्तियाँ".
+
+| # | Page | Content | Roles |
+|---|---|---|---|
+| 1 | Dashboard | Today's business, outstanding, operations, analytics, station/date filters | Owner, Manager (Employee: station summary only) |
+| 2 | Nozzle Readings | Per-station nozzle cards, big numeric inputs, flags, history | All |
+| 3 | Receipts | Add (large buttons), day list, totals | All |
+| 4 | Payments | Add + invoice photo, day list, totals | All |
+| 5 | Udhari | Customer list (search/sort/filter), customer profile, ledger, Generate Statement, receipt, Add Credit/Settlement, Bulk Import | All can add entries; Owner imports |
+| 6 | Cashbook | Opening → closing, per station, deposits/withdrawals | All view, limited edit |
+| 7 | Fuel Stock | Tanks, deliveries, dips, calibration, variance | Employee: dips/deliveries |
+| 8 | Suppliers | Profiles, bills, payments, ledger, due dates | Owner, Manager |
+| 9 | Employees | Profiles, shifts, attendance, advances, performance | Owner, Manager |
+| 10 | Daily Closing | 18 clickable tiles, cash count, submit, owner review/lock, PDF/Excel | All submit, Owner locks |
+| 11 | Reports | DSR, station-wise, consolidated, ageing, ledger, exports | Owner, Manager |
+| 12 | Settings | Stations, nozzles, prices, categories, users, roles, backups, audit log | Owner |
+
+**Employee "quick action" home**: 6 giant buttons (Nozzle Reading, Receipt, Payment, Udhari Entry, Udhari Payment, Close Day).
+
+---
+
+## 5. Local deployment plan
+
+1. Reserve laptop IP in router DHCP (e.g. 192.168.1.100). Set laptop **never to sleep**, and power plan to "High performance" when plugged in.
+2. Install Docker Desktop (or native Postgres + Node). Copy project; `.env` created from template with generated secrets.
+3. First run: `docker compose up -d` → migrations → create owner account via setup page (first run only).
+4. **Auto-start**: Docker restart policy `unless-stopped` + Windows Task Scheduler "At startup" for Docker/app; health check script restarts services if `/api/health` fails.
+5. **Local HTTPS**: Caddy/mkcert; install the root certificate on staff phones once. Phones open `https://pump.local` or the IP and use "Add to Home Screen".
+6. Windows Firewall: allow inbound only on the app port, **only from the private LAN subnet**. Postgres bound to `127.0.0.1` (no LAN exposure).
+7. Router: disable guest-network access to the laptop; use WPA2/3 with a strong password.
+8. Remote access later: Tailscale on laptop and owner's phone/laptop. No port forwarding.
+9. **Hardware**: UPS (≥ 600 VA line-interactive; 1 kVA preferred, ~30+ min runtime for laptop + router), SSD-based laptop, external USB drive dedicated to backups.
+
+---
+
+## 6. Backup & security strategy
+
+**Backups**
+- Nightly `pg_dump -Fc` (02:00) + weekly full-volume uploads archive.
+- Written to local `backups/` **and** copied to the external drive; rotation **30 daily + 12 monthly**.
+- Each backup: SHA-256 checksum, size logged in `backup_log`, dashboard shows "Last backup: OK/FAILED" in red when older than 26 hours.
+- **Monthly automated restore test** into a scratch database + row-count/ledger-sum comparison. A backup that has not been restore-tested is not trusted.
+- Optional (free): encrypted copy to a personal Google Drive/USB kept at home, because the laptop and drive could be stolen or burn together.
+- `RESTORE.md` and `MIGRATE.md` give step-by-step commands; tested during Phase 7/8.
+
+**Security**
+- argon2id hashing, login throttling and lockout, session expiry (e.g. 12 h), forced password change on first login.
+- Role checks on **every API route** (server-side), plus station scoping.
+- Input validation (Zod) on every request; parameterised queries via Prisma.
+- Uploads: type/size limits, random filenames, stored outside web root, served through an authenticated route.
+- DB credentials only in `.env` (not in git, not in client bundle). App DB role has no `DELETE`/`UPDATE` on financial tables.
+- Audit log is append-only and visible to the owner. Failed logins are logged.
+- Secrets/OTPs/Paytm passwords are never stored (future scope respected).
+
+---
+
+## 7. Development roadmap
+
+| Phase | Deliverable | Exit test |
+|---|---|---|
+| 1 | This architecture (approved), photo-based UI tweaks | Your sign-off |
+| 2 | Repo, Docker/Postgres, migrations, auth, roles, stations/nozzles/prices, PWA shell, minimal dashboard, SSE | Login on 2 phones; live event shows on both |
+| 3 | Meter readings, receipts, payments, cashbook, DSR, daily closing core | Worked examples (₹42,347) pass; closing math tests |
+| 4 | Customers, ledger, settlements, bulk import, statements/receipts, WhatsApp share | Ledger sums = view; duplicate import blocked |
+| 5 | Suppliers, tanks, deliveries, dips, employees | Stock formula tests |
+| 6 | Owner dashboard, clickable closing tiles, reports, PDF/Excel | Every tile drills to rows that sum to the tile |
+| 7 | Concurrency, duplicate, bad reading, DB-kill, Wi-Fi drop, reboot, restore tests | Test report |
+| 8 | Install guide, auto-start, backups, restore & migration drill | Fresh laptop restored from backup |
+
+Each phase ends with automated tests + a short demo checklist. Financial logic gets unit tests (decimal-exact) **and** database integration tests.
+
+---
+
+## 8. Potential loopholes & solutions
+
+| # | Loophole | Solution |
+|---|---|---|
+| L1 | Sales counted twice (meter + receipt) | Revenue only from meters; receipts for sales are a *split* of that total that must sum to it |
+| L2 | Customer repayment counted as revenue | `posting_class` excludes it from revenue; reports tested |
+| L3 | Two phones submit same entry (double tap, retry) | Client idempotency key UNIQUE + disabled button + server duplicate heuristic (same customer/amount/time window → confirm prompt) |
+| L4 | Wi-Fi drops mid-entry; offline queue causes duplicates or stale balances | **No offline money queue in v1**; clear "not saved" state; unsent form kept on screen |
+| L5 | Staff lowers a closing reading to cut recorded sales | Reading ≥ opening enforced; every override flagged and visible to owner; daily sales vs litres vs tank dip cross-check |
+| L6 | Meter resets/rollover/replacement | Explicit owner-approved meter event; no silent acceptance |
+| L7 | Employee edits history | No UPDATE/DELETE; reversal+replacement with reason; role gating; audit log |
+| L8 | Back-dated entries to hide shortage | Entries timestamped by server; business-date change requires manager; locked days closed |
+| L9 | Credit limit bypassed concurrently | Advisory lock per customer during credit sale |
+| L10 | Shortage hidden as expense | Shortage goes to `cash_adjustments` only after owner decision |
+| L11 | Opening balance import duplicated or wrong | File hash, name+phone duplicate detection, typed-total confirmation, reconcile flag |
+| L12 | Staff share one login | Per-employee logins; each entry shows name; PIN switch for shared phones; session timeout |
+| L13 | Laptop dies, only backup on same disk | Nightly external + optional offsite copy; tested restore; portable Docker setup |
+| L14 | Power cut corrupts DB | UPS + Postgres WAL (crash-safe) + `fsync` on; avoid forced power-off |
+| L15 | Clock drift on laptop skews timestamps | NTP sync enabled; server (not phone) clock stamps entries |
+| L16 | Phone with PWA lost | Owner can revoke sessions/disable user instantly |
+| L17 | Rate change mid-day | Prices have effective dates; mid-day change supports a split reading (reading taken at change time) |
+| L18 | Rounding differences | Decimal arithmetic; fixed rounding rule (round half up at line level), shown in settings |
+| L19 | WhatsApp sharing limits | Use the phone's native share sheet with the PDF; the Business API stays a future item |
+| L20 | Sales by fuel mixing across stations | Each record carries `station_id`; consolidated reports sum per station explicitly |
+| L21 | Tank "theoretical stock" drift due to uncalibrated tank charts | Capture calibration charts; flag trend not just single-day variance |
+| L22 | Handwritten format mismatch | Awaiting your cashbook photo; layout adjusted before Phase 2 UI |
+
+---
+
+## Approval checklist
+- [ ] Re-attach cashbook photo (and answer the 5 open items in §0)
+- [ ] Confirm Docker vs native install
+- [ ] Confirm testing-fuel treatment and shortage policy
+- [ ] Approve schema + workflow → Phase 2 starts

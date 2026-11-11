@@ -1,0 +1,7 @@
+# Keep LF everywhere. Migration files are checksummed by scripts/migrate.ts;
+# a CRLF conversion on checkout would change their SHA-256 and block migrations.
+* text=auto eol=lf
+*.sql text eol=lf
+*.ico binary
+*.png binary
+*.jpg binary

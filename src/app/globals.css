@@ -1,0 +1,44 @@
+@import "tailwindcss";
+
+:root {
+  --background: #f5f6f8;
+  --surface: #ffffff;
+  --foreground: #14171c;
+  --muted: #5d6673;
+  --line: #d5d9e0;
+  --brand: #1d4ed8;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --background: #0f1216;
+    --surface: #181c22;
+    --foreground: #eef1f5;
+    --muted: #9aa4b2;
+    --line: #2c333d;
+    --brand: #2f62e8;
+  }
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
+  --color-brand: var(--brand);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  /* System fonts only: works offline; Nirmala UI / Noto cover Devanagari on Windows / Android. */
+  font-family: system-ui, "Segoe UI", "Nirmala UI", "Noto Sans", "Noto Sans Devanagari", Roboto, Arial, sans-serif;
+  -webkit-tap-highlight-color: transparent;
+}
+
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}

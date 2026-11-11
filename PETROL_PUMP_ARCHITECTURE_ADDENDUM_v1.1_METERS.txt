@@ -1,0 +1,372 @@
+# Architecture Addendum v1.1: Cumulative Meters, Testing Fuel, Tamper-Evident Readings
+
+Applies on top of `PETROL_PUMP_ARCHITECTURE.md` (v1.0).
+**Supersedes:** §2.2 (`meter_readings`, `nozzle_meter_events`), §3.2 steps 1, 2, 8, and loopholes L5, L6, L17.
+Everything else in v1.0 stands.
+
+---
+
+## 0. Corrections to v1.0
+
+| v1.0 said | Problem | v1.1 |
+|---|---|---|
+| `litres_net = closing − opening − testing`, and tank stock uses "net sales" | Assumed every test is returned to the tank. If any test fuel is *not* returned, tank stock was overstated, and sales and tank used the same number when they must differ. | Three separate quantities are kept: customer sales, tests returned, tests not returned. Tank depletion is a different number from customer sales (§1.2). |
+| Reading rows hold `opening_reading` and `closing_reading` | An opening typed (or editable) on each row can be fudged, and the chain isn't structurally guaranteed. | Readings are **checkpoints in an append-only chain**. Opening is never stored or typed. It is whatever the previous checkpoint was (§1.1). |
+| Price per reading row | A mid-day price change can't be valued correctly. | Price changes are chain boundaries, so every litre belongs to exactly one price (§3.3). |
+
+---
+
+## 1. Core model
+
+### 1.1 The reading chain (points and segments)
+
+Each nozzle has one ordered chain of **meter points**. A point is a single photographed-and-typed reading of the totalizer at a moment. A **segment** is the stretch between two consecutive points.
+
+```
+ BASELINE ─► DAY_END ─► SHIFT_END ─► PRICE_CHANGE ─► DAY_END ─► EVENT_END │ EVENT_START ─► DAY_END …
+ 25,000.00   25,450.50    …            30,200.00       …         old meter   new meter
+        └─ seg ─┘└─ seg ─┘            └─── seg ───┘                  └ zero-litre bridge ┘
+```
+
+- **Opening = the previous point's reading**, never typed. Continuity is structural. An employee normally types **one number: the current reading**.
+- **Epoch**: each nozzle has a `meter_epoch` that increments on a reset/replacement. Readings are only comparable inside one epoch. The event itself bridges epochs.
+- **Point types**: `BASELINE` (first-ever reading, owner-entered at go-live), `DAY_END`, `SHIFT_END`, `PRICE_CHANGE`, `OPENING_VERIFY`, `EVENT_END`, `EVENT_START`.
+- Points are **immutable**. Review decisions, corrections and flags are separate append-only rows.
+- A point is **ACCEPTED** if it passes validation with no flags, otherwise **PENDING_REVIEW** until an authorised reviewer decides. A reviewer can also REJECT a point (it is voided and re-entered through a correction).
+
+### 1.2 Fuel quantities (the testing fix)
+
+Test pours go *through the nozzle*, so the totalizer counts them. The meter measures throughput, not sales.
+
+| Quantity | Definition | Where it goes |
+|---|---|---|
+| **Physical nozzle throughput** | `end reading − start reading` (rollover-aware) | Meter reconciliation only |
+| **Tests returned to tank** | Litres poured for testing and poured back | Subtracted from sales. **Not** tank depletion |
+| **Tests not returned** | Litres tested and kept, spilled, used or discarded | Subtracted from sales. **Is** tank depletion. A stock loss, never revenue |
+| **Customer sales litres** | `throughput − returned − not returned` | Revenue, DSR, collections check |
+| **Net tank depletion** | `throughput − returned` = customer sales + not returned | Tank book stock |
+
+```
+Book closing stock = Opening stock + Fuel received − Σ(net tank depletion of nozzles on that tank)
+Sales value        = ROUND(customer sales litres × price_applied, 2)   (per segment)
+Stock loss litres  = tests not returned   (valued at purchase rate for information only; owner decides treatment)
+```
+
+**Worked check (one nozzle on one tank):** throughput 450.50 L, tests returned 5.00 L, tests not returned 2.00 L.
+Customer sales = 443.50 L. Net tank depletion = 445.50 L (= 443.50 + 2.00 lost).
+Tank opening 10,000.00 → book closing **9,554.50**. The old v1.0 logic would give 10,000 − 443.50 = 9,556.50, overstating stock by the 2 L that left the tank.
+
+---
+
+## 2. Schema changes
+
+### 2.1 Replace `meter_readings` / `nozzle_meter_events`
+
+```sql
+-- nozzle configuration additions
+ALTER TABLE nozzles ADD COLUMN meter_int_digits  SMALLINT NOT NULL DEFAULT 7;   -- confirm on the actual dispensers
+ALTER TABLE nozzles ADD COLUMN meter_decimals    SMALLINT NOT NULL DEFAULT 2;
+ALTER TABLE nozzles ADD COLUMN rollover_modulus  NUMERIC(16,2) NOT NULL;        -- 10^int_digits, e.g. 10000000.00
+ALTER TABLE nozzles ADD COLUMN meter_epoch       INT NOT NULL DEFAULT 1;
+ALTER TABLE nozzles ADD COLUMN max_flow_lpm      NUMERIC(6,2) NOT NULL DEFAULT 50;  -- physical dispensing ceiling
+ALTER TABLE nozzles ADD COLUMN service_status    TEXT NOT NULL DEFAULT 'ACTIVE'
+        CHECK (service_status IN ('ACTIVE','OUT_OF_SERVICE'));
+
+CREATE TABLE meter_points (                      -- APPEND-ONLY
+  id               UUID PRIMARY KEY,
+  nozzle_id        UUID NOT NULL REFERENCES nozzles(id),
+  seq              BIGINT NOT NULL,              -- assigned by DB trigger, contiguous per nozzle
+  epoch            INT    NOT NULL,
+  reading          NUMERIC(12,2) NOT NULL CHECK (reading >= 0),
+  point_type       TEXT NOT NULL CHECK (point_type IN
+                    ('BASELINE','DAY_END','SHIFT_END','PRICE_CHANGE','OPENING_VERIFY','EVENT_END','EVENT_START')),
+  business_date    DATE NOT NULL,
+  shift_id         UUID NULL REFERENCES shifts(id),
+  taken_at         TIMESTAMPTZ NOT NULL DEFAULT now(),   -- SERVER clock, never client-supplied
+  effective_at     TIMESTAMPTZ NOT NULL,                 -- = taken_at, except corrections keep the original
+  entered_by       UUID NOT NULL REFERENCES users(id),
+  device_id        TEXT, ip INET,
+  photo_id         UUID NULL REFERENCES attachments(id), -- photo of the meter display
+  supersedes_id    UUID NULL REFERENCES meter_points(id),-- set only by approved corrections
+  meter_event_id   UUID NULL REFERENCES meter_events(id),
+  price_change_id  UUID NULL REFERENCES price_change_events(id),
+  idempotency_key  TEXT NOT NULL UNIQUE,
+  prev_hash        BYTEA,                                -- tamper-evidence chain (§6)
+  row_hash         BYTEA NOT NULL,
+  UNIQUE (nozzle_id, seq)
+);
+CREATE INDEX ON meter_points (nozzle_id, business_date, seq);
+
+CREATE TABLE meter_events (                      -- explicit reset / rollover / replacement
+  id UUID PRIMARY KEY, nozzle_id UUID NOT NULL REFERENCES nozzles(id),
+  event_type TEXT NOT NULL CHECK (event_type IN ('RESET','ROLLOVER','REPLACEMENT')),
+  requested_by UUID NOT NULL, requested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  approved_by UUID NULL, approved_at TIMESTAMPTZ NULL,
+  status TEXT NOT NULL CHECK (status IN ('REQUESTED','APPROVED','REJECTED','APPLIED')),
+  old_final_reading NUMERIC(12,2) NULL,     -- last value on the OLD meter (RESET/REPLACEMENT)
+  new_start_reading NUMERIC(12,2) NULL,     -- first value on the NEW/reset meter
+  old_serial TEXT, new_serial TEXT,
+  evidence_photo_id UUID NULL, reason TEXT NOT NULL,
+  CHECK (approved_by IS NULL OR approved_by <> requested_by)   -- four-eyes
+);
+
+CREATE TABLE nozzle_tests (                      -- APPEND-ONLY; one row per test pour
+  id UUID PRIMARY KEY, nozzle_id UUID NOT NULL, business_date DATE NOT NULL,
+  tested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  litres NUMERIC(8,3) NOT NULL CHECK (litres > 0),
+  returned_to_tank BOOLEAN NOT NULL,
+  purpose TEXT CHECK (purpose IN ('QUANTITY_CHECK','QUALITY_CHECK','INSPECTION','OTHER')),
+  not_returned_reason TEXT,                      -- REQUIRED when returned_to_tank = false (CHECK)
+  employee_id UUID NOT NULL, idempotency_key TEXT NOT NULL UNIQUE,
+  voided_by_id UUID NULL REFERENCES nozzle_tests(id),
+  CHECK (returned_to_tank OR not_returned_reason IS NOT NULL)
+);
+
+CREATE TABLE price_change_events (               -- see §3.3
+  id UUID PRIMARY KEY, station_id UUID NOT NULL, fuel_type_id UUID NOT NULL,
+  old_price NUMERIC(8,2) NOT NULL, new_price NUMERIC(8,2) NOT NULL CHECK (new_price > 0),
+  effective_at TIMESTAMPTZ NOT NULL, created_by UUID NOT NULL, approved_by UUID NULL
+);
+-- fuel_prices.effective_from becomes TIMESTAMPTZ and is written ONLY by price activation.
+
+CREATE TABLE meter_flags (                       -- APPEND-ONLY
+  id UUID PRIMARY KEY, nozzle_id UUID NOT NULL, point_id UUID NULL,
+  business_date DATE NOT NULL,
+  code TEXT NOT NULL, severity TEXT NOT NULL CHECK (severity IN ('REVIEW','INFO')),
+  detail JSONB NOT NULL, raised_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE meter_reviews (                     -- APPEND-ONLY decisions
+  id UUID PRIMARY KEY, flag_id UUID NOT NULL REFERENCES meter_flags(id),
+  decision TEXT NOT NULL CHECK (decision IN
+     ('ACCEPT_AS_IS','CORRECT','REJECT','ALLOCATE_DAYS','ATTRIBUTE_GAP')),
+  reason TEXT NOT NULL CHECK (length(trim(reason)) >= 5),
+  reviewer_id UUID NOT NULL, reviewed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  replacement_point_id UUID NULL REFERENCES meter_points(id),
+  allocation JSONB NULL,           -- {"2026-11-09":300.00,...} must sum to segment litres
+  gap_attribution TEXT NULL CHECK (gap_attribution IN ('SALE','TEST_RETURNED','TEST_NOT_RETURNED','METER_ERROR'))
+);
+
+CREATE TABLE meter_entry_attempts (              -- APPEND-ONLY: blocked/failed entries are evidence too
+  id UUID PRIMARY KEY, nozzle_id UUID NOT NULL, user_id UUID NOT NULL,
+  attempted_value TEXT NOT NULL,                 -- raw text as typed
+  expected_min NUMERIC(12,2), outcome TEXT NOT NULL, rule_code TEXT NOT NULL,
+  at TIMESTAMPTZ NOT NULL DEFAULT now(), device_id TEXT, ip INET
+);
+
+CREATE TABLE day_lock_snapshots (                -- values frozen at owner lock, to expose later corrections
+  station_id UUID, business_date DATE, nozzle_id UUID,
+  throughput NUMERIC(12,3), tests_returned NUMERIC(12,3), tests_not_returned NUMERIC(12,3),
+  customer_litres NUMERIC(12,3), sales_value NUMERIC(14,2), locked_by UUID, locked_at TIMESTAMPTZ,
+  PRIMARY KEY (station_id, business_date, nozzle_id)
+);
+```
+
+Effective status of a point (ACCEPTED / PENDING_REVIEW / REJECTED / SUPERSEDED) is **derived** by view `v_meter_points_effective` from flags, reviews and supersedes links, so no row ever needs an UPDATE.
+
+### 2.2 Segments are derived, not typed
+
+`v_meter_segments` (window `LAG` over `seq`, joins to tests and prices) yields per segment: `start_point, end_point, business_date, shift, kind` (`NORMAL | EVENT_BRIDGE | GAP_UNATTRIBUTED | MULTI_DAY`), `throughput`, `tests_returned`, `tests_not_returned`, `customer_litres`, `net_tank_depletion`, `price_applied`, `sales_value`, `confirmed` (bool).
+
+- **Throughput**: normal: `end − start`. Rollover event: `end + rollover_modulus − start`. Reset/replacement bridge: 0 litres (pre-event litres are the segment ending at `EVENT_END`; post-event litres start at `EVENT_START`).
+- **Tests** are allocated to the segment whose `[start.effective_at, end.effective_at]` contains `tested_at`.
+- **Price**: latest `fuel_prices.effective_from ≤ start.effective_at`. No price change may fall strictly inside a segment (checked at write time and again by a nightly integrity query).
+- `confirmed = true` only if the end point and every earlier point it depends on are ACCEPTED. All other litres show as **provisional** on screens and are excluded from locked totals.
+
+### 2.3 Other schema touch-points
+- `dip_readings.kind` gains `OPENING | CLOSING | PRE_DELIVERY | POST_DELIVERY` so day-end variation isn't distorted by a mid-day tanker.
+- `tank_adjustments` (append-only): records stock losses from tests not returned (auto, linked to `nozzle_tests`) and approved write-offs.
+- `daily_sales_collections`/closing check: *Σ customer sales value of all segments for the station-day* must equal *cash(derived) + digital + card + credit (+ other)*. Tests are never in that sum.
+- New permissions: `meter.enter`, `meter.verify`, `meter.review`, `meter.event.request`, `meter.event.approve`, `meter.correct`, `price.activate`, `tests.record`.
+
+---
+
+## 3. Workflows
+
+### 3.1 Normal entry (employee)
+1. Nozzle card shows **Last accepted reading** (read-only, grey), the time and who entered it.
+2. Employee types the current reading (numeric keypad) and optionally takes a photo of the display.
+3. Confirmation screen: *"Litres = 450.50 · Tests 5.00 · Sales litres 445.50 · Value ₹41,877.00"*. A typo such as 254,50.50 is obvious here.
+4. Server, in one DB transaction: lock the nozzle row (`SELECT … FOR UPDATE`) → fetch the latest non-rejected point → run rules H1–H9 → run flag rules → insert the point (trigger assigns `seq`, `prev_hash`, `row_hash`) → write flags → write audit → `NOTIFY` live update.
+5. Result: **Accepted** (green) or **Sent for review** (amber), with the flag reasons in plain language.
+
+Tests are entered at the time they happen (a quick "Test pour" button: litres, returned yes/no, reason if no), not retyped at day end.
+
+### 3.2 Shifts
+Shift-end entry creates a `SHIFT_END` point. The **next shift's opening is that same point**, so there's no second number to type and no possible mismatch. Day-end is just the last shift's end. Single-shift stations only use `DAY_END`.
+
+### 3.3 Price change during a day (split periods)
+1. Owner/Manager starts **Change price** (station, fuel, new price).
+2. App lists every active nozzle of that fuel at that station and asks for the **current reading of each**.
+3. On submit, one transaction creates a `PRICE_CHANGE` point per nozzle, one `price_change_events` row, and the new `fuel_prices` row with `effective_at = now()` (same transaction timestamp). If any nozzle is missing, **nothing activates**.
+4. Segments before and after each point are valued at the old and new price automatically.
+5. If the price was changed at the dispenser but not recorded, the owner can post a **retro split** with the readings seen at the time (photo/dispenser display). It is marked `APPROVED_ESTIMATE` and stays visible.
+
+If your rate changes at a fixed time every day, that boundary can coincide with the day rollover. See open question 1.
+
+### 3.4 Meter events (reset, rollover, replacement)
+1. Employee sees a decrease block (rule H3) or a rollover suspicion (F5). Chain is not touched.
+2. They tap **Request meter event**, choose the type, enter the old final reading and a photo, and give a reason.
+3. A different authorised user (manager/owner, never the requester) approves.
+4. On approval the service writes, atomically: `EVENT_END` (old meter final), increments `meter_epoch`, `EVENT_START` (new start reading), all linked to the event. Rollover writes one `EVENT_END`-equivalent point with the modulus rule.
+5. Math: rollover litres = `new + modulus − previous`. Reset/replacement: litres before = `old_final − previous point`, bridge = 0, litres after start from `new_start`.
+6. The full history across epochs remains one continuous, queryable chain.
+
+### 3.5 Flag review (authorised reviewer)
+Reviewer sees the point, previous point, segment litres vs norm, photo, tests and the cross-checks. Options: **Accept as is** (reason required), **Correct** (reversal + replacement), **Reject** (re-enter), **Allocate across days** (multi-day gap), **Attribute gap** (sale / test returned / test not returned / meter error). Employees cannot review their own entries. An owner reviewing their own flagged entry is allowed but marked *self-reviewed*.
+
+### 3.6 Missing readings
+A scheduled job at the business-day cutoff (plus a configurable grace) raises `MISSING_READING` for any active nozzle with no day-end point. It shows on the owner dashboard. When a later reading spans several days, the segment is `MULTI_DAY`: nothing is attributed to individual days until a reviewer allocates the litres (default proposal: equal split, editable), and the allocation must sum to the segment litres.
+
+### 3.7 Corrections
+Accepted points are never edited. A correction adds a replacement point (`supersedes_id`) with the same `effective_at`, requires reason + approver, and recomputes the two neighbouring segments. The corrected value must stay between its neighbours in the same epoch. Litres shift between the adjacent days but their **combined total stays within the original span**. If either day is locked, only the owner can correct, and the lock snapshot shows the before/after.
+
+### 3.8 Provisional continuation (decision to confirm)
+A flagged point does not stop the pump. The next entry carries forward from it as a **provisional** chain and the dashboard shows confirmed vs provisional figures. If review later changes the point, dependent segments recalculate automatically. The **day cannot be submitted or locked** while REVIEW flags are open or day-end points are missing (owner override needs a reason and is logged). Alternative: block further entries on that nozzle until reviewed. I recommend continuing provisionally. Configurable in Settings.
+
+---
+
+## 4. Validation rules
+
+### Hard blocks (nothing stored in the chain; attempt logged in `meter_entry_attempts`; owner notified for H3)
+| ID | Rule |
+|---|---|
+| H1 | Empty, non-numeric or negative reading |
+| H2 | More decimals than `meter_decimals`, or more integer digits than the meter can show |
+| H3 | **Reading lower than the previous point in the same epoch** with no approved meter event |
+| H4 | Stale opening: chain advanced since the form loaded, or shift sequence violated (shift 2 before shift 1 closed). Form reloads with the new opening |
+| H5 | Nozzle out of service, or user not allocated to that station |
+| H6 | Back-dated business date outside the open day (only via correction workflow) |
+| H7 | Duplicate idempotency key → original result returned, no new row |
+| H8 | Price change without readings for all nozzles of that fuel |
+| H9 | Test litres ≤ 0, or tests in a segment exceeding its throughput |
+
+### Flags (stored; point becomes PENDING_REVIEW; reviewed by an authorised user)
+| ID | Code | Trigger |
+|---|---|---|
+| F1 | ZERO_THROUGHPUT | No change on an active nozzle for a business day (unless marked out of service / no sale) |
+| F2 | HIGH_VOLUME | Litres > 3 × trailing 14-day median (before 7 days of history: owner-set expected max) |
+| F3 | LOW_VOLUME | Litres < 25% of trailing median |
+| F4 | IMPLAUSIBLE_RATE | Litres > `max_flow_lpm` × minutes since previous point (physically impossible) |
+| F5 | ROLLOVER_SUSPECTED | Lower reading while the previous reading is within 1% of the modulus |
+| F6 | MULTI_DAY_SEGMENT | Segment covers more than one business date |
+| F7 | MISSING_READING | No day-end point by cutoff |
+| F8 | OPENING_MISMATCH | Opening-verify value ≠ carried-forward reading (gap litres go to a `GAP_UNATTRIBUTED` segment) |
+| F9 | TEST_ANOMALY | Daily tests > threshold (default 20 L/nozzle), or tests not returned > 2 L/day, or not-returned test without reason |
+| F10 | SAME_PERSON_VERIFY | Opening verified by the same user who made the previous closing (setting) |
+| F11 | LATE_ENTRY | Entered more than the configured hours after the day ended |
+| F12 | CROSS_CHECK_MISMATCH | At closing: sales value ≠ declared collections + credit beyond tolerance, or tank variation beyond tolerance traced to the tank's nozzles |
+| F13 | PHOTO_MISSING | Photo required by setting (always for flagged readings) but absent |
+| F14 | EVENT_PENDING | Entries made while a requested meter event is unresolved |
+
+Thresholds (3×, 25%, 20 L, 2 L, tolerance %) live in Settings (owner-editable, changes audited).
+
+---
+
+## 5. Accounting workflow changes (replaces v1.0 §3.2 steps 1, 2, 8)
+
+1. **Readings** produce segments; **customer sales litres** × price = **sales value**. Tests never enter revenue.
+2. **Sales split**: station sales value (confirmed + provisional shown separately) = cash(derived) + UPI/Paytm + card + customer credit (+ other). Cash is the balancing figure, verified against the physical count. An *attributed gap sold* (F8 → SALE) is added at the segment price and, if uncollected, shows up as a cash shortage rather than disappearing.
+3. **Stock**: `Book closing = Opening + Received − Σ net tank depletion`. Tests not returned appear as a separate **stock loss** line on the tank report and DSR, valued at purchase rate for information; the owner decides whether to write it off. It is not auto-expensed.
+4. **DSR columns (replaces v1.0 §6 list items):** throughput, tests returned, tests not returned, customer litres, price(s) applied, sales value, plus the existing collection columns.
+5. **Closing guard**: no submit/lock with open REVIEW flags or missing day-end points (owner override with reason).
+6. **Revenue reports** include only **confirmed** segments by default, with provisional shown as a separate, clearly labelled line.
+
+---
+
+## 6. Tamper-evidence and audit design
+
+**Controls**
+1. The employee never types or edits an opening reading.
+2. `meter_points`, `nozzle_tests`, flags, reviews and attempts are append-only. The app DB role has no `UPDATE`/`DELETE`, and triggers block both even for the table owner.
+3. **Server timestamps**, device ID and IP on every entry. The client cannot set time.
+4. **Hash chain**: a DB trigger computes `row_hash = SHA-256(prev_hash ‖ nozzle_id ‖ seq ‖ epoch ‖ reading ‖ point_type ‖ effective_at ‖ entered_by)`. A nightly job re-verifies every chain. A direct SQL edit or deleted row breaks the chain and raises an alert. The latest chain-head hash is written into `backup_log` and each backup, so a later rewrite can be detected by comparing with an older backup.
+5. **Photo evidence** of the display (required for flagged readings, events and price changes; optional otherwise).
+6. **Opening verification** at the start of each day/shift: the person taking over confirms the displayed reading. An understated closing is exposed the next morning as an F8 gap.
+7. **Triangulation**: meter litres vs tank book stock and dips vs deliveries and supplier invoices vs money collected vs physical cash count. Faking one source shows up in the others.
+8. **Corrections** need reason + approver and are counted per employee on the owner's integrity panel.
+9. **Blocked attempts are logged**, so someone trying a lower reading leaves a trace even though nothing was recorded.
+10. **Four-eyes** for meter events and for reviewing flagged readings.
+
+| Manipulation attempt | What happens |
+|---|---|
+| Enter a lower closing than the true one | H3 block if lower than previous; if only under-reported: F8 gap at next verification, tank variation, cash/collection mismatch, photo |
+| Skip a day | F7, multi-day segment needing allocation |
+| Fake a meter reset | Needs approved event with photo of the old final reading, shown in the events list |
+| Sit on entries and backfill | Server time, LATE_ENTRY flag |
+| Change a number afterwards | Impossible. A correction needs a reason and approver and is visible |
+| Edit the database directly | Trigger denial; hash-chain mismatch alert |
+| Several people colluding, including whoever reviews | **Not fully preventable in software.** Independent evidence (tank dips, supplier bills, bank settlements, photos) and the owner's integrity panel are the defence |
+
+I can't make fraud impossible: a plausible false reading entered carefully and consistently across all the checks can still pass. The goal is that it **cannot be silent and cannot be erased**.
+
+---
+
+## 7. Owner dashboard: all six nozzles on one screen
+
+2×3 grid on mobile (3×2 on tablet/desktop), grouped by station. Each tile shows:
+- Station · nozzle · fuel (colour-coded Diesel/Petrol)
+- Last accepted reading, with time and who entered it
+- Today's litres: **confirmed** and **provisional**, and value ₹
+- Tests today: returned / not returned
+- Status chip: ✅ OK · 🟡 Pending review · 🔴 Missing reading · ⚪ Out of service · 🔁 Event pending
+- 7-day litres sparkline
+
+Tap a tile → full reading chain for that nozzle (every point, segment, flag, review, correction, photo).
+
+**Integrity panel** (same page, below the tiles): open flags by age, blocked attempts today, corrections this week per employee, meter events, missing readings, last hash-chain verification (OK/FAILED), tank variation vs nozzle litres. The sum of the six tiles' confirmed values equals the consolidated DSR.
+
+---
+
+## 8. Test cases
+
+All money/litre maths is decimal-exact (`NUMERIC`), with rounding half-up per segment, then summed.
+
+| # | Scenario | Input | Expected |
+|---|---|---|---|
+| TC-01 | Plain day | prev 25,000.00 → close 25,450.50, no tests, ₹94.00 | throughput 450.50; customer 450.50; ₹42,347.00; depletion 450.50 |
+| TC-02 | Test returned | as TC-01 + 5.000 L returned | customer 445.50; **₹41,877.00**; depletion 445.50; throughput 450.50 |
+| TC-03 | Test not returned | TC-01 + 5.000 returned + 2.000 not returned (reason given) | customer 443.50; **₹41,689.00**; depletion 445.50; stock loss 2.00 |
+| TC-04 | Tank book stock | TC-03 on a tank opening 10,000.00, no delivery; dip 9,554.00 | book 9,554.50; variation −0.50 (within tolerance); old formula (9,556.50) must fail this test |
+| TC-05 | Price split | prev 30,000.00; PRICE_CHANGE 30,200.00 (₹94→₹95); close 30,500.00; 5 L returned test after change | A 200.00 × 94 = ₹18,800.00; B 300.00 − 5 = 295.00 × 95 = ₹28,025.00; total **₹46,825.00**; depletion 495.00 |
+| TC-06 | Two shifts | shift 1 close 30,150.00; shift 2 close 30,500.00 | shift 2 opening auto = 30,150.00; litres 150.00 + 350.00 = 500.00 = single-shift day total |
+| TC-07 | Decrease | prev 25,450.50, enter 25,400.00, no event | H3 block; no point; attempt logged; owner notified |
+| TC-08 | Rollover | modulus 10,000,000.00; prev 9,999,900.00; approved ROLLOVER; new 150.00 | litres **250.00** |
+| TC-09 | Reset | prev 8,400.00; event old-final 8,650.00, new start 0.00; day close 120.00 | pre-event 250.00 + post 120.00 = **370.00**; bridge 0.00; epoch +1 |
+| TC-10 | Replacement | prev 52,000.00; old-final 52,300.00; new meter starts 15.00; close 215.00 | 300.00 + 200.00 = **500.00**; bridge 0.00 |
+| TC-11 | Unapproved event | event REQUESTED only | entries remain blocked/flagged; chain untouched |
+| TC-12 | Missing days | last point Nov 8 at 25,450.50; next on Nov 11 at 26,350.50 | F7 for Nov 9 and 10; F6; 900.00 L unattributed until allocation 300/300/300; allocation not summing to 900.00 rejected |
+| TC-13 | Opening mismatch | carried 25,450.50; verified 25,452.50 | 2.00 L GAP_UNATTRIBUTED, F8, excluded from confirmed sales; after "SALE" attribution = ₹188.00 at ₹94, appears as cash shortage if uncollected |
+| TC-14 | High volume | median 400 L; entry 1,900 L | F2; PENDING_REVIEW; provisional on dashboard |
+| TC-15 | Impossible rate | 600 L in 5 min at 50 L/min limit (250 L) | F4 flag |
+| TC-16 | Zero throughput | no change on an active nozzle | F1 (none if marked out of service) |
+| TC-17 | Tests > throughput | throughput 3.00 L, tests 5.00 L | H9 block |
+| TC-18 | Concurrency | two phones submit the same nozzle at once | exactly one point; other gets H4 stale message; `seq` contiguous; no duplicate |
+| TC-19 | Retry | same idempotency key resent | one row; same response |
+| TC-20 | Provisional chain | flagged day-end; next day continues | next opening = pending point (provisional); reviewer corrects the first → second segment recalculates; combined litres of both days preserved |
+| TC-21 | Correction | accepted 25,540.50 should be 25,450.50 | reversal + replacement; two neighbouring segments recomputed; audit holds old/new/reason/approver; locked day needs owner; lock snapshot shows the delta |
+| TC-22 | Tamper | `UPDATE`/`DELETE` on `meter_points` | denied. With a superuser bypass, nightly hash verification fails and alerts |
+| TC-23 | Price guard | price change with 1 of 2 nozzle readings | rejected; old price remains; no partial points |
+| TC-24 | Closing guard | submit day with open REVIEW flag or no day-end point | blocked; owner override requires reason and is logged |
+| TC-25 | Self-review | employee reviews own flagged reading | denied; owner self-review marked |
+| TC-26 | Decimals/rounding | reading 25,450.505 → H2. 333.33 L × ₹94.57 | H2 block; value **₹31,523.02** (31,523.0181 rounded) |
+| TC-27 | Out-of-service | nozzle marked out of service for the day | no F1/F7; reading must be unchanged; reactivation audited |
+| TC-28 | Sequence | shift 2 reading before shift 1 closed | H4 block |
+| TC-29 | Dashboard | six nozzles, mixed flagged/OK | six tiles correct; confirmed vs provisional right; confirmed sum = station DSR = consolidated DSR |
+| TC-30 | Revenue exclusion | tests, gap pending, customer repayment | none appear in fuel revenue |
+| TC-31 | Hash chain after backup restore | restore to a clean DB | chain verifies; head hash equals the one logged at backup time |
+| TC-32 | Not-returned test without reason | `returned_to_tank=false`, no reason | DB CHECK rejects |
+
+---
+
+## 9. Roadmap impact
+- **Phase 2 (Foundation)** now also includes: nozzle meter configuration, `meter_points` + hash-chain trigger + immutability triggers, `meter_events`, `nozzle_tests`, `price_change_events`, and the six-tile dashboard layout (static data until Phase 3).
+- **Phase 3** delivers the entry flow, rules H1–H9 / F1–F14, review queue, price-split activation, meter events, and TC-01 to TC-32 as automated tests.
+- **Phase 6** completes the integrity panel and lock snapshots.
+
+## 10. Questions that affect the build
+1. **Business-day rollover time** (6:00 AM, midnight, or something else), and **does the daily fuel rate change at a fixed time**? If it changes at the same moment the day rolls over, the day-end reading also serves as the price-change point, so no extra reading is needed.
+2. **Totalizer format** on your dispensers: how many digits before and after the decimal point (for example 7 + 2)? Rollover maths depends on it.
+3. **Confirm provisional continuation** (§3.8) vs blocking a nozzle until a flagged reading is reviewed.
+
+Phase 2 starts once these three are answered and you approve v1.0 + v1.1. The cashbook photo from the first message is still outstanding.
