@@ -44,6 +44,10 @@ export async function currentBusinessDate(c: ClientBase): Promise<string> {
   return r.rows[0].d;
 }
 
+async function dayBefore(c: ClientBase, d: string): Promise<string> {
+  return (await c.query("SELECT ($1::date - 1)::text AS d", [d])).rows[0].d;
+}
+
 /** Business day that a reading taken right now would close. */
 export async function closingBusinessDate(c: ClientBase): Promise<string> {
   const r = await c.query("SELECT reading_business_date($1, now())::text AS d", [await siteId(c)]);
@@ -57,8 +61,10 @@ export async function getBoard(c: ClientBase): Promise<Board> {
             EXISTS (SELECT 1 FROM meter_points p WHERE p.nozzle_id = n.id AND p.point_type = 'BASELINE') AS has_baseline,
             lp.id AS last_id, lp.reading::text AS last_reading, lp.effective_at AS last_at, u.name AS last_by,
             lp.business_date::text AS last_date, lp.point_type AS last_type,
-            EXISTS (SELECT 1 FROM meter_points p WHERE p.nozzle_id = n.id AND p.business_date = $1
-                      AND p.point_type = 'DAY_END') AS done,
+            EXISTS (SELECT 1 FROM meter_points p WHERE p.nozzle_id = n.id
+                      AND ((p.business_date = $1 AND p.point_type = 'DAY_END')
+                           -- go-live morning: the starting reading already closes this day
+                           OR (p.business_date >= $1 AND p.point_type = 'BASELINE'))) AS done,
             (SELECT count(*)::int FROM v_open_meter_flags f WHERE f.nozzle_id = n.id) AS open_flags
        FROM nozzles n JOIN stations st ON st.id = n.station_id JOIN fuel_types f ON f.id = n.fuel_type_id
        LEFT JOIN LATERAL (SELECT * FROM v_meter_points_live l WHERE l.nozzle_id = n.id
@@ -147,8 +153,9 @@ export async function setBaseline(
   const p = await c.query(
     `INSERT INTO meter_points (nozzle_id, epoch, reading, cumulative, point_type, business_date, entered_by, idempotency_key)
      VALUES ($1, 1, $2, $2, 'BASELINE', $3, $4, $5) RETURNING id`,
-    // The starting reading counts as the closing of the business day that is ending, like any day-end.
-    [input.nozzleId, reading, await closingBusinessDate(c), userId, input.idempotencyKey],
+    // The starting reading OPENS the business day in progress (it closes the day before), whatever
+    // the time it is typed: at 8 AM on go-live day or at 2 PM, the first app day is today.
+    [input.nozzleId, reading, await dayBefore(c, await currentBusinessDate(c)), userId, input.idempotencyKey],
   );
   return { pointId: p.rows[0].id };
 }

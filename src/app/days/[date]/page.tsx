@@ -109,9 +109,24 @@ export default async function DayPage({ params }: PageProps<"/days/[date]">) {
               <tbody>
                 {line("Fuel sales", b.sales.total, true)}
                 {line("− Udhari given", b.udhariGiven)}
+                {b.collections
+                  .filter((x) => x.total != null)
+                  .map((x) => (
+                    <tr key={x.mode}>
+                      <td>
+                        − Fuel sold by {x.label}
+                        <div className="text-xs text-muted">
+                          {x.label} total {inr(x.total)}
+                          {x.alreadyEntered !== "0.00" && <> − udhari / other {inr(x.alreadyEntered)}</>}
+                        </div>
+                      </td>
+                      <td className="num">{inr(x.sales)}</td>
+                    </tr>
+                  ))}
+                {line("Cash sales", b.cashSales, true)}
                 {line("+ Udhari received (cash)", b.udhariReceivedCash)}
                 {line("+ Lube / other received (cash)", b.otherInCash)}
-                {line("− Paid in cash", b.paymentsCash)}
+                {line("− Expenses paid in cash", b.paymentsCash)}
                 {showCash && line("Cash that should be in hand", b.expectedCash, true)}
                 {b.counted != null && line("Cash counted", b.counted, true)}
                 {showCash &&

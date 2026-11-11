@@ -24,7 +24,10 @@ export function CustomerTable({ rows }: { rows: Row[] }) {
       title={`${list.length} customers · ${owing} owe money`}
       right={
         <span className="flex items-center gap-2">
-          sort
+          <Link href="/customers/print" className="underline">
+            print all ledgers
+          </Link>
+          · sort
           <select className="inp h-7 w-28 text-sm" value={sort} onChange={(e) => setSort(e.target.value as typeof sort)}>
             <option value="balance">by balance</option>
             <option value="name">by name</option>

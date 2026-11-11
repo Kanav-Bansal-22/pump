@@ -41,10 +41,10 @@ export default async function setup(project: TestProject) {
     // pump_test_backup: backup -> restore round trip.
     // pump_test_money: one full register day (entries, count, lock).
     // pump_test_import: opening-balance import.
-    databases: ["pump_test", "pump_test_clean", "pump_test_meters", "pump_test_backup", "pump_test_money", "pump_test_import"],
+    databases: ["pump_test", "pump_test_clean", "pump_test_meters", "pump_test_backup", "pump_test_money", "pump_test_import", "pump_test_reports"],
     passwords: TEST_PASSWORDS,
   });
-  for (const database of ["pump_test", "pump_test_clean", "pump_test_meters", "pump_test_backup", "pump_test_money", "pump_test_import"])
+  for (const database of ["pump_test", "pump_test_clean", "pump_test_meters", "pump_test_backup", "pump_test_money", "pump_test_import", "pump_test_reports"])
     await migrate({ host: "127.0.0.1", port: PORT, migratorPassword: TEST_PASSWORDS.pump_migrator, database }, () => {});
   project.provide("db", { host: "127.0.0.1", port: PORT, database: "pump_test", superPassword: SUPER_PW, ...TEST_PASSWORDS });
 

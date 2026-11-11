@@ -48,3 +48,6 @@ next-env.d.ts
 
 # local demo test logins
 .demo-logins.txt
+
+# server logs
+/logs/

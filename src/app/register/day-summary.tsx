@@ -26,6 +26,10 @@ export function DaySummary({ summary: s, isOwner, integrityCode }: { summary: Su
   const [counted, setCounted] = useState("");
   const [reason, setReason] = useState("");
   const [needReason, setNeedReason] = useState(false);
+  const totals = useAction("/api/day");
+  const [modes, setModes] = useState<Record<string, string>>({});
+  // only the boxes actually typed in are sent; empty boxes keep the saved total
+  const typed = () => Object.fromEntries(Object.entries(modes).filter(([, v]) => v.trim() !== ""));
   const ended = s.status === "LOCKED";
   const showCash = isOwner || ended; // blind count: staff see the expected cash only after the day is ended
   const diff = s.difference;
@@ -42,9 +46,25 @@ export function DaySummary({ summary: s, isOwner, integrityCode }: { summary: Su
           ))}
           <Row label="Fuel sales" v={s.sales.total} bold />
           <Row sign="−" label="Udhari given" v={s.udhariGiven} />
+          {s.collections
+            .filter((x) => x.total != null)
+            .map((x) => (
+              <tr key={x.mode}>
+                <td className="w-5 text-muted">−</td>
+                <td>
+                  Fuel sold by {x.label}
+                  <div className="text-xs text-muted">
+                    {x.label} total {inr(x.total)}
+                    {x.alreadyEntered !== "0.00" && <> − udhari / other by {x.label} {inr(x.alreadyEntered)}</>}
+                  </div>
+                </td>
+                <td className={`num ${x.sales.startsWith("-") ? "text-red-700" : ""}`}>{inr(x.sales)}</td>
+              </tr>
+            ))}
+          <Row label="Cash sales" v={s.cashSales} bold />
           <Row sign="+" label="Udhari received (cash)" v={s.udhariReceivedCash} />
           <Row sign="+" label="Lube / other received (cash)" v={s.otherInCash} />
-          <Row sign="−" label="Paid in cash" v={s.paymentsCash} />
+          <Row sign="−" label="Expenses paid in cash" v={s.paymentsCash} />
           {showCash ? (
             <Row label="Cash that should be in hand" v={s.expectedCash} bold />
           ) : (
@@ -68,7 +88,7 @@ export function DaySummary({ summary: s, isOwner, integrityCode }: { summary: Su
       </table>
       {(s.nonCashIn !== "0.00" || s.paymentsNonCash !== "0.00") && (
         <div className="mt-1 text-xs text-muted">
-          Not in cash (UPI / bank): received {inr(s.nonCashIn)}, paid {inr(s.paymentsNonCash)}.
+          Not in the cash drawer: received by UPI / card / bank {inr(s.nonCashIn)}, expenses paid by UPI / bank {inr(s.paymentsNonCash)}.
         </div>
       )}
 
@@ -84,13 +104,45 @@ export function DaySummary({ summary: s, isOwner, integrityCode }: { summary: Su
 
       {!ended ? (
         <form
-          className="mt-3 flex flex-wrap items-end gap-2 border-t border-line pt-3"
+          className="mt-3 border-t border-line pt-3"
           onSubmit={async (e) => {
             e.preventDefault();
-            const r = await run({ action: "endDay", date: s.date, counted, overrideReason: needReason ? reason : null }, "Day ended and saved in Daily records.");
+            const r = await run(
+              { action: "endDay", date: s.date, counted, overrideReason: needReason ? reason : null, collections: typed() },
+              "Day ended and saved in Daily records.",
+            );
             if (!r) setNeedReason(isOwner);
           }}
         >
+          <div className="mb-1 text-xs font-semibold text-muted">
+            Money received by other modes today (total shown on each machine / app) · UPI / कार्ड / बैंक
+          </div>
+          <div className="mb-2 flex flex-wrap items-end gap-2">
+            {s.collections.map((x) => (
+              <label key={x.mode} className="w-28">
+                <span className="block text-xs text-muted">{x.label} ₹</span>
+                <input
+                  className="inp num w-full"
+                  inputMode="decimal"
+                  placeholder={x.total ?? "0"}
+                  value={modes[x.mode] ?? ""}
+                  onChange={(e) => setModes({ ...modes, [x.mode]: e.target.value.replace(/[^\d.,]/g, "") })}
+                />
+              </label>
+            ))}
+            <button
+              type="button"
+              className="btn-light"
+              disabled={!Object.values(modes).some((v) => v) || totals.state.kind === "saving"}
+              onClick={async () => {
+                if (await totals.run({ action: "collections", date: s.date, amounts: typed() }, "Totals saved.")) setModes({});
+              }}
+            >
+              Save totals
+            </button>
+          </div>
+          <SaveStatus state={totals.state} />
+          <div className="flex flex-wrap items-end gap-2">
           <label className="w-40">
             <span className="block text-xs text-muted">Cash counted ₹ · गिनी नकदी</span>
             <input className="inp num w-full" inputMode="decimal" value={counted} onChange={(e) => setCounted(e.target.value.replace(/[^\d.,]/g, ""))} placeholder="0" />
@@ -105,6 +157,7 @@ export function DaySummary({ summary: s, isOwner, integrityCode }: { summary: Su
           >
             {state.kind === "saving" ? "Ending…" : `End day ${niceDate(s.date)}`}
           </button>
+          </div>
         </form>
       ) : (
         <div className="mt-2 text-sm">

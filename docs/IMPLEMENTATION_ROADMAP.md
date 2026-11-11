@@ -48,6 +48,21 @@ Phases follow the master prompt (Part 18). A phase is **complete only when its e
   - Migration 0011: a day can be ended only from 05:00 next morning (setting) — found when a day ended at 11 PM blocked udhari entries until 8 AM
   - Blind count kept: the expected cash is not even sent to staff phones before the day is ended
   - Old separate screens removed (readings, udhari given/received, payments, receipts, close-day, owner day/rates)
+- [x] **Go-live readiness (2026-11-12)**
+  - Live refresh: register every 20 s, customers 30 s, daily records 60 s (only while visible, never while someone is typing)
+  - `/api/health` (app + database + backup age + reading-chain check; no business data)
+  - `scripts/run-server.ps1` keeps the production server running on port 80 and restarts it within 5 s (tested: process killed → back by itself); daily logs in `logs/`
+  - `scripts/install-server.ps1` (build, start-at-logon task, firewall for Private networks + local subnet only, never-sleep power plan) and `uninstall-server.ps1` — **written, not yet installed (needs owner OK)**
+  - `scripts/use-database.ps1 prod|demo` switches the app (and backups) between practice and real data and restarts the server
+  - Go-live morning: days up to the starting readings are "before go-live" (never offered, never need readings, cannot be ended)
+  - `docs/GO_LIVE.md` checklist, `docs/STAFF_GUIDE.md` (Hindi), `docs/OWNER_GUIDE.md`
+  - 100 tests passing
+- [x] **Owner testing round 1 (2026-11-12)**
+  - Day summary: money received by UPI / card / bank / other as machine totals (migration 0012), minus entries already made in that mode = sales by that mode; lock posts each to its account; no double counting (tested: UPI account = machine total)
+  - Separate Expenses box (Cash / UPI must be chosen) and Lube / other income box (Cash / UPI / Card); Paytm removed (counted as UPI); optional mobile on new udhari customer
+  - **Statements** page: daily / monthly / from–to; sales & income, how sales were received, day-wise register, expenses by head (cash vs UPI/bank), cash book (b/f, receipts, payments, c/f), udhari debtors (opening / Dr / Cr / closing in Dr-Cr), day book; Print / Save as PDF; Excel (one sheet per section)
+  - Customer ledger: period filter, balance b/f, Debit / Credit / Balance Dr-Cr, closing c/f, print / PDF, Excel; **print all customer ledgers** (one per page) + Excel with one sheet per customer
+  - 106 tests passing
   - [ ] Backup script + phone download + health card
 - [ ] Phase 3 — Meter and fuel management
 - [ ] Phase 4 — Accounting

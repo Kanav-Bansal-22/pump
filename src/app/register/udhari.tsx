@@ -20,7 +20,6 @@ type Statement = {
 const MODES = [
   ["CASH", "Cash"],
   ["UPI", "UPI"],
-  ["PAYTM", "Paytm"],
   ["BANK_TRANSFER", "Bank"],
 ] as const;
 

@@ -1,15 +1,17 @@
 import Link from "next/link";
+import { AutoRefresh } from "@/components/auto-refresh";
 import { Panel, Shell } from "@/components/ui";
 import { niceDate } from "@/lib/format";
 import { pool, q } from "@/server/db";
 import { closingBusinessDate, getBoard, getRates } from "@/server/meters/service";
-import { customerList, entryDates, getDayBalance } from "@/server/money/service";
+import { customerList, entryDates, getDayBalance, goLiveDate } from "@/server/money/service";
 import { requireUser } from "@/server/session";
 import { DayBook } from "./register/day-book";
 import { DaySummary } from "./register/day-summary";
 import { NewCustomer } from "./register/new-customer";
 import { NozzleClosing } from "./register/nozzle-closing";
-import { OtherEntry } from "./register/other-entry";
+import { Expenses } from "./register/expenses";
+import { Income } from "./register/income";
 import { Rates } from "./register/rates";
 import { Udhari } from "./register/udhari";
 
@@ -38,7 +40,9 @@ export default async function RegisterPage() {
     const ratesClosing = closingDate === dates.today ? ratesToday : await getRates(c, closingDate);
     const customers = await customerList(c);
     const closingStatus = (await c.query("SELECT status FROM business_days WHERE business_date = $1", [closingDate])).rows[0]?.status ?? "OPEN";
-    const summaryDate = closingStatus === "LOCKED" ? dates.today : closingDate;
+    const live = await goLiveDate(c);
+    const beforeGoLive = !!live && closingDate <= live; // go-live morning: the starting readings closed it
+    const summaryDate = closingStatus === "LOCKED" || beforeGoLive ? dates.today : closingDate;
     const summary = await getDayBalance(c, summaryDate);
     const bookToday = summaryDate === dates.today ? summary : await getDayBalance(c, dates.today);
     const snap = summary.status === "LOCKED" ? (await c.query("SELECT integrity_code FROM day_snapshots WHERE business_date = $1 AND kind = 'LOCK'", [summaryDate])).rows[0] : null;
@@ -60,6 +64,8 @@ export default async function RegisterPage() {
             Register · <span className="text-accent">{niceDate(dates.today)}</span>
           </h1>
           {dates.yesterday && <span className="text-sm text-muted">Closing of {niceDate(dates.yesterday)} still open (until 11 AM)</span>}
+          <AutoRefresh />
+
           {backupOld && Number(backupOld) > 26 && (
             <Link href="/owner/backups" className="text-sm font-semibold text-red-700 underline">
               ⚠ No backup for {Number(backupOld) > 900 ? "a long time" : `${backupOld} h`}: back up now
@@ -73,14 +79,15 @@ export default async function RegisterPage() {
             <Rates date={dates.today} rates={ratesToday.map((r) => ({ code: r.code, short: r.short, name: r.name_en, rate: r.rate, setBy: r.set_by }))} canSet={user.permissions.includes("price.set")} />
             <Udhari customers={customers} dates={dates} />
             <NewCustomer dates={dates} />
-            <OtherEntry dates={dates} isOwner={isOwner} />
+            <Expenses dates={dates} isOwner={isOwner} />
+            <Income dates={dates} />
           </div>
 
           {/* right: closing of the day */}
           <div className="min-w-0 space-y-3">
             <NozzleClosing
               closingDate={closingDate}
-              locked={closingStatus === "LOCKED"}
+              locked={closingStatus === "LOCKED" || beforeGoLive}
               rows={board.map((b) => ({
                 nozzleId: b.nozzleId,
                 station: b.stationName,

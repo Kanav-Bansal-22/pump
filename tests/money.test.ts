@@ -3,7 +3,7 @@ import type { Client } from "pg";
 import { createUser } from "@/server/auth/service";
 import { createStandardLayout } from "@/server/config/service";
 import { runIdempotent } from "@/server/idempotency";
-import { countCash, createEntry, endDay, findOrCreateParty, getDayBalance, lockDay, partyStatement, reopenDay, reverseEntry, type EntryInput } from "@/server/money/service";
+import { countCash, createEntry, declareCollections, endDay, findOrCreateParty, getDayBalance, lockDay, partyStatement, reopenDay, reverseEntry, type EntryInput } from "@/server/money/service";
 import { connect, tx } from "./helpers/db";
 
 let c: Client;
@@ -69,7 +69,7 @@ beforeAll(async () => {
     await c.query("INSERT INTO meter_epochs (nozzle_id, epoch, int_digits, decimals, created_by) VALUES ($1,1,7,2,$2)", [N[label], ownerId]);
     await c.query(
       `INSERT INTO meter_points (nozzle_id, epoch, reading, cumulative, point_type, business_date, taken_at, effective_at, entered_by, idempotency_key)
-       VALUES ($1,1,$2,0,'BASELINE',($3::date - 1), now() - interval '1 day', now() - interval '1 day', $4, $5)`,
+       VALUES ($1,1,$2,0,'BASELINE',($3::date - 3), now() - interval '1 day', now() - interval '1 day', $4, $5)`,
       [N[label], open, today, ownerId, key()],
     );
   }
@@ -91,8 +91,22 @@ describe("End day timing", () => {
   });
 });
 
+const daysBefore = (d: string, n: number) => new Date(Date.parse(`${d}T00:00:00Z`) - n * 86400000).toISOString().slice(0, 10);
+
+describe("go-live", () => {
+  it("the day closed by the starting readings (and earlier days) cannot be ended: nothing happened in the app", async () => {
+    await expect(inTx(() => endDay(c, owner, { date: daysBefore(today, 3), counted: "0", overrideReason: "trying anyway" }, key()))).rejects.toThrow(
+      /before go-live/,
+    );
+    await expect(inTx(() => endDay(c, owner, { date: "2026-01-15", counted: "0", overrideReason: "trying anyway" }, key()))).rejects.toThrow(/before go-live/);
+  });
+});
+
 describe("End day with problems (no readings at all)", () => {
-  const quiet = "2026-01-15";
+  let quiet = "";
+  beforeAll(() => {
+    quiet = daysBefore(today, 1); // after go-live, but no readings entered for it
+  });
   it("staff cannot end it; nothing is saved, not even the cash count", async () => {
     await expect(inTx(() => endDay(c, staff, { date: quiet, counted: "0" }, key()))).rejects.toThrow(/Cannot end the day yet: Readings missing.*ask the owner/);
     expect((await c.query("SELECT count(*)::int n FROM cash_counts WHERE business_date = $1", [quiet])).rows[0].n).toBe(0);
@@ -120,6 +134,10 @@ describe("a register day: entries -> balance -> count -> lock", () => {
     milkEntry = (await entry(staff, { kind: "EXPENSE", expenseCode: "6400", amount: "550", mode: "CASH", description: "milk" })).entryId;
     await entry(staff, { kind: "EXPENSE", expenseCode: "6500", amount: "1052", mode: "CASH", description: "misc" });
     await entry(staff, { kind: "SUPPLIER_PAYMENT", party: { name: "HPCL" }, amount: "10000", mode: "BANK_TRANSFER" });
+    await entry(staff, { kind: "EXPENSE", expenseCode: "6500", amount: "400", mode: "UPI", description: "paid by UPI: not from the drawer" });
+    // UPI / card: an udhari repayment by UPI, then the day's machine totals (UPI includes that repayment)
+    await entry(staff, { kind: "CUSTOMER_REPAYMENT", party: { name: "Ravi UPI" }, amount: "5000", mode: "UPI" });
+    await inTx(() => declareCollections(c, staff, { date: today, amounts: { UPI: "50,000", CARD: "20000" } }, key()));
     const s = await partyStatement(c, bittu);
     expect(s.balance).toBe("6250.00");
     expect(s.lines.map((l) => l.vehicle_no)).toEqual(["PB10AB3241", "7495"]);
@@ -159,15 +177,19 @@ describe("a register day: entries -> balance -> count -> lock", () => {
     // 5 nozzles: 178,765.90 + 182,278.32 + 389,862.55 + 98,979.07 + 72,673.52
     expect(b.sales.total).toBe("922559.36");
     expect(b.udhariGiven).toBe("151888.00");
-    expect(b.udhariReceived).toBe("318764.00");
-    expect(b.paymentsAll).toBe("11602.00"); // 550 + 1052 + 10000 (bank); the cancelled 5500 is excluded
-    expect(b.cashSales).toBe("770671.36");
+    expect(b.udhariReceived).toBe("323764.00"); // incl. 5,000 by UPI
+    expect(b.collections.find((x) => x.mode === "UPI")).toMatchObject({ total: "50000.00", alreadyEntered: "5000.00", sales: "45000.00" });
+    expect(b.collections.find((x) => x.mode === "CARD")).toMatchObject({ total: "20000.00", sales: "20000.00" });
+    expect(b.nonCashSales).toBe("65000.00");
+    expect(b.paymentsAll).toBe("12002.00"); // 550 + 1052 cash + 10000 bank + 400 UPI; the cancelled 5500 is excluded
+    expect(b.paymentsCash).toBe("1602.00"); // only cash expenses lower the cash in hand
+    expect(b.cashSales).toBe("705671.36"); // 922,559.36 - 151,888 udhari - 65,000 UPI/card
     // cash: 770,671.36 + 318,764 + 450 (lube) - 1,602 (cash payments)
-    expect(b.expectedCash).toBe("1088283.36");
+    expect(b.expectedCash).toBe("1023283.36"); // UPI repayment is not in the drawer
   });
 
   it("count -> submit; entries blocked until owner sends the day back", async () => {
-    const r = await inTx(() => countCash(c, staff, { date: today, counted: "1088000" }, key()));
+    const r = await inTx(() => countCash(c, staff, { date: today, counted: "1023000" }, key()));
     expect(r.difference).toBe("-283.36");
     await expect(entry(staff, { kind: "EXPENSE", expenseCode: "6400", amount: "10", mode: "CASH" })).rejects.toThrow(/already counted/);
   });
@@ -180,13 +202,13 @@ describe("a register day: entries -> balance -> count -> lock", () => {
     const b = await inTx(() => getDayBalance(c, today));
     expect(b.sales.byFuel.PETROL.value).toBe("91351.71"); // register: 868.61 L x 105.17
     expect(b.sales.total).toBe("941237.55");
-    expect(b.expectedCash).toBe("1106961.55");
-    const r = await inTx(() => countCash(c, staff, { date: today, counted: "1106100" }, key()));
+    expect(b.expectedCash).toBe("1041961.55");
+    const r = await inTx(() => countCash(c, staff, { date: today, counted: "1041100" }, key()));
     expect(r.difference).toBe("-861.55");
   });
 
   it("staff may End day a CLEAN day (recount inside End day); it posts the day correctly and freezes it", async () => {
-    const { integrityCode, difference } = await inTx(() => endDay(c, staff, { date: today, counted: "11,06,100" }, key()));
+    const { integrityCode, difference } = await inTx(() => endDay(c, staff, { date: today, counted: "10,41,100" }, key()));
     expect(difference).toBe("-861.55");
     expect(integrityCode).toMatch(/^[0-9A-F]{8}$/);
     // fuel revenue = meter sales exactly; repayments / opening balances never in revenue
@@ -196,7 +218,9 @@ describe("a register day: entries -> balance -> count -> lock", () => {
     expect(await bal("1600")).toBe("861.55"); // shortage in suspense
     expect(await bal("6960")).toBe("0.00"); // never auto-expensed
     expect(await bal("1100")).toBe("0.00"); // drawer emptied by handover
-    expect(await bal("1150")).toBe("1106100.00"); // counted cash with owner
+    expect(await bal("1150")).toBe("1041100.00"); // counted cash with owner
+    expect(await bal("1300")).toBe("50000.00"); // UPI account = exactly the UPI machine total (5,000 udhari + 45,000 fuel)
+    expect(await bal("1310")).toBe("20000.00"); // card account = card machine total
     expect(await bal("2100")).toBe("10000.00"); // paid to HPCL: supplier balance, not an expense
     expect(await bal("6400")).toBe("550.00");
     const tb = await c.query("SELECT SUM(balance)::text s FROM v_trial_balance");
@@ -205,7 +229,7 @@ describe("a register day: entries -> balance -> count -> lock", () => {
     await expect(entry(staff, { kind: "LUBE_SALE", amount: "10", mode: "CASH" })).rejects.toThrow(/already counted|locked/);
     await expect(dayEnd("S3:MS A1", "1029999.00")).rejects.toThrow(/DAY_LOCKED/);
     const snap = await c.query("SELECT figures->>'expectedCash' AS e, integrity_code FROM day_snapshots WHERE business_date = $1", [today]);
-    expect(snap.rows[0]).toEqual({ e: "1106961.55", integrity_code: integrityCode });
+    expect(snap.rows[0]).toEqual({ e: "1041961.55", integrity_code: integrityCode });
   });
 });
 

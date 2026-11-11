@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { AutoRefresh } from "@/components/auto-refresh";
 import { Page } from "@/components/page";
 import { Panel } from "@/components/ui";
 import { inr, niceDate, num } from "@/lib/format";
@@ -11,6 +12,7 @@ type Fig = {
   sales: { total: string; byFuel: Record<string, { litres: string }> };
   udhariGiven: string;
   udhariReceived: string;
+  nonCashSales?: string;
   payments: string;
   expectedCash: string;
   counted: string | null;
@@ -35,7 +37,14 @@ export default async function DaysPage() {
     ).rows as Array<{ date: string; status: string; figures: Fig; integrity_code: string; ended_by: string; locked_at: Date }>;
     return (
       <Page title="Daily records · दैनिक हिसाब" active="days" wide>
-        <Panel title={`${rows.length} ended days`} right="click a date for the full day">
+        <Panel
+          title={`${rows.length} ended days`}
+          right={
+            <span>
+              click a date for the full day · <AutoRefresh seconds={60} />
+            </span>
+          }
+        >
           <div className="overflow-x-auto">
             <table className="reg min-w-[60rem]">
               <thead>
@@ -46,6 +55,7 @@ export default async function DaysPage() {
                   <th className="text-right">Fuel sales</th>
                   <th className="text-right">Udhari given</th>
                   <th className="text-right">Udhari recd</th>
+                  <th className="text-right">UPI / card sales</th>
                   <th className="text-right">Paid</th>
                   {isOwner && <th className="text-right">Cash expected</th>}
                   <th className="text-right">Cash counted</th>
@@ -70,6 +80,7 @@ export default async function DaysPage() {
                       <td className="num font-semibold">{inr(f?.sales.total)}</td>
                       <td className="num">{inr(f?.udhariGiven)}</td>
                       <td className="num">{inr(f?.udhariReceived)}</td>
+                      <td className="num">{f?.nonCashSales && f.nonCashSales !== "0.00" ? inr(f.nonCashSales) : ""}</td>
                       <td className="num">{inr(f?.payments)}</td>
                       {isOwner && <td className="num">{inr(f?.expectedCash)}</td>}
                       <td className="num">{inr(f?.counted)}</td>
@@ -84,7 +95,7 @@ export default async function DaysPage() {
                 })}
                 {rows.length === 0 && (
                   <tr>
-                    <td colSpan={11} className="text-muted">
+                    <td colSpan={12} className="text-muted">
                       No day has been ended yet. Use “End day” on the register.
                     </td>
                   </tr>

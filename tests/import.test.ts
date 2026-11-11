@@ -4,7 +4,8 @@ import type { Client } from "pg";
 import { createUser } from "@/server/auth/service";
 import { createStandardLayout } from "@/server/config/service";
 import { addOpeningBalance, confirmImport, parseSignedAmount, previewImport, templateXlsx } from "@/server/money/opening";
-import { createEntry, partyStatement } from "@/server/money/service";
+import { setBaseline } from "@/server/meters/service";
+import { createEntry, goLiveDate, partyStatement } from "@/server/money/service";
 import { connect, tx } from "./helpers/db";
 
 let c: Client;
@@ -41,6 +42,17 @@ beforeAll(async () => {
 });
 afterAll(async () => {
   await c.end();
+});
+
+describe("starting readings (go-live)", () => {
+  it("open the business day in progress whatever the time: the first app day is today, and today can be ended later", async () => {
+    const n = (await c.query("SELECT id FROM nozzles ORDER BY sort_order LIMIT 1")).rows[0].id;
+    await inTx(() => setBaseline(c, owner.id, { nozzleId: n, reading: "1847703.80", idempotencyKey: key() }));
+    const p = await c.query("SELECT business_date::text d FROM meter_points WHERE nozzle_id = $1", [n]);
+    const prev = (await c.query("SELECT ($1::date - 1)::text d", [today])).rows[0].d;
+    expect(p.rows[0].d).toBe(prev); // closes the day before today
+    expect(await inTx(() => goLiveDate(c))).toBe(prev); // so today is the first app day
+  });
 });
 
 describe("amount reading", () => {

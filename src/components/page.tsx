@@ -5,7 +5,7 @@ import { currentUser } from "@/server/session";
 import { Shell } from "./ui";
 
 /** Server wrapper for the smaller pages: same top bar as the register, a title and an optional back link. */
-export async function Page({ title, back, children, active, wide }: { title: ReactNode; back?: string; children: ReactNode; active?: "register" | "days" | "customers" | "settings"; wide?: boolean }) {
+export async function Page({ title, back, children, active, wide }: { title: ReactNode; back?: string; children: ReactNode; active?: "register" | "days" | "customers" | "statements" | "settings"; wide?: boolean }) {
   const user = await currentUser();
   const pump = user ? ((await q<{ name: string }>("SELECT name FROM sites WHERE active LIMIT 1"))[0]?.name ?? null) : null;
   return (

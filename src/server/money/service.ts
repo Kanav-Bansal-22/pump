@@ -4,6 +4,63 @@ import { AppError, Errors } from "../errors";
 import { D, parseAmount, type Dec } from "../money";
 
 // ---------------------------------------------------------------------------
+// Money received by other modes (machine / app totals for the day)
+// ---------------------------------------------------------------------------
+export const COLLECTION_MODES = [
+  { mode: "UPI", label: "UPI", account: "1300" }, // includes Paytm (owner: "just UPI is fine")
+  { mode: "CARD", label: "Card", account: "1310" },
+  { mode: "BANK", label: "Bank transfer", account: "1200" },
+  { mode: "OTHER", label: "Other", account: "1200" },
+] as const;
+
+export function collectionModeOf(paymentMode: string): string | null {
+  return (
+    { UPI: "UPI", PAYTM: "UPI", DEBIT_CARD: "CARD", CREDIT_CARD: "CARD", BANK_TRANSFER: "BANK", OTHER: "OTHER" } as Record<string, string>
+  )[paymentMode] ?? null;
+}
+
+/** Save the day's machine totals (only the modes typed in). A changed total is a new row; the latest counts. */
+export async function declareCollections(
+  c: ClientBase,
+  user: { id: string; permissions: string[] },
+  input: { date: string; amounts: Record<string, string> },
+  idempotencyKey: string,
+) {
+  if (!user.permissions.includes("cash.count")) throw Errors.forbidden();
+  const site = await siteId(c);
+  const dates = await entryDates(c);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(input.date) || input.date > dates.today) throw Errors.badInput("Wrong day.");
+  const current = Object.fromEntries(
+    (await c.query("SELECT mode, amount::text FROM v_day_collections WHERE site_id = $1 AND business_date = $2", [site, input.date])).rows.map((r) => [
+      r.mode,
+      r.amount,
+    ]),
+  );
+  let saved = 0;
+  for (const m of COLLECTION_MODES) {
+    const raw = input.amounts[m.mode];
+    if (raw == null || String(raw).trim() === "") continue;
+    let amount: string;
+    try {
+      amount = /^0+(\.0+)?$/.test(String(raw).trim()) ? "0.00" : parseAmount(String(raw));
+    } catch {
+      throw Errors.badInput(`${m.label}: amount must be a number like 45000.`);
+    }
+    if (current[m.mode] === amount) continue;
+    await c.query("INSERT INTO day_collections (site_id, business_date, mode, amount, entered_by, idempotency_key) VALUES ($1,$2,$3,$4,$5,$6)", [
+      site,
+      input.date,
+      m.mode,
+      amount,
+      user.id,
+      `${idempotencyKey}:${m.mode}`,
+    ]);
+    saved++;
+  }
+  return { saved };
+}
+
+// ---------------------------------------------------------------------------
 // Entry kinds (one per kind of line in the Rokad)
 // ---------------------------------------------------------------------------
 export const ENTRY_KINDS = {
@@ -104,8 +161,18 @@ export async function entryDates(c: ClientBase): Promise<{ today: string; yester
     [s],
   );
   const x = r.rows[0];
-  const yesterday = x.rd < x.today && (x.rd_status == null || x.rd_status === "OPEN") ? x.rd : null;
+  const live = await goLiveDate(c);
+  const yesterday = x.rd < x.today && (x.rd_status == null || x.rd_status === "OPEN") && !(live && x.rd <= live) ? x.rd : null;
   return { today: x.today, yesterday };
+}
+
+/**
+ * The last business day BEFORE go-live: the starting (baseline) readings close it. Days up to and including
+ * it have no business in the app: they are never offered for entries, never need readings, cannot be ended.
+ */
+export async function goLiveDate(c: ClientBase): Promise<string | null> {
+  const r = await c.query("SELECT min(business_date)::text AS d FROM meter_points WHERE point_type = 'BASELINE'");
+  return r.rows[0].d;
 }
 
 async function dayStatus(c: ClientBase, site: string, date: string): Promise<string> {
@@ -382,7 +449,20 @@ export async function getDayBalance(c: ClientBase, date: string) {
   const paymentsAll = sum((e) => ENTRY_KINDS[e.kind].dir === "OUT");
   const nonCashIn = udhariReceived.minus(udhariReceivedCash).plus(otherIn.minus(otherInCash));
 
-  const cashSales = salesTotal.minus(udhariGiven);
+  // Money received by UPI / Paytm / card / bank: the machine total for the day, minus what was already
+  // entered in that mode (udhari received by UPI, lube paid by card ...) = fuel sold by that mode.
+  const declared = Object.fromEntries(
+    (await c.query("SELECT mode, amount::text FROM v_day_collections WHERE site_id = $1 AND business_date = $2", [site, date])).rows.map((r) => [r.mode, r.amount]),
+  ) as Record<string, string>;
+  const collections = COLLECTION_MODES.map((m) => {
+    const already = sum((e) => ENTRY_KINDS[e.kind].dir === "IN" && collectionModeOf(e.mode_code) === m.mode);
+    const total = declared[m.mode] ?? null;
+    const sales = total == null ? new D(0) : new D(total).minus(already);
+    return { mode: m.mode, label: m.label, total, alreadyEntered: already.toFixed(2), sales: sales.toFixed(2) };
+  });
+  const nonCashSales = collections.reduce((a, x) => a.plus(x.sales), new D(0));
+
+  const cashSales = salesTotal.minus(udhariGiven).minus(nonCashSales);
   const expectedCash = cashSales.plus(udhariReceivedCash).plus(otherInCash).minus(paymentsCash);
   const count = (
     await c.query(
@@ -400,7 +480,10 @@ export async function getDayBalance(c: ClientBase, date: string) {
   if (missingReadings.length) problems.push(`Readings missing: ${missingReadings.join(", ")}`);
   if (missingRates.length) problems.push(`Rate not set for: ${missingRates.join(", ")}`);
   if (openFlags) problems.push(`${openFlags} reading(s) waiting for owner review`);
-  if (cashSales.lt(0)) problems.push("Udhari given is more than the fuel sales. Check the udhari entries.");
+  for (const x of collections)
+    if (new D(x.sales).lt(0))
+      problems.push(`${x.label} total ₹${x.total} is less than the ${x.label} entries already made (₹${x.alreadyEntered}). Check the ${x.label} total.`);
+  if (cashSales.lt(0)) problems.push("Udhari + UPI/card/bank received is more than the fuel sales. Check those amounts.");
   if (!count) problems.push("Cash not counted yet");
 
   return {
@@ -425,6 +508,8 @@ export async function getDayBalance(c: ClientBase, date: string) {
     paymentsCash: paymentsCash.toFixed(2),
     nonCashIn: nonCashIn.toFixed(2),
     paymentsNonCash: paymentsAll.minus(paymentsCash).toFixed(2),
+    collections,
+    nonCashSales: nonCashSales.toFixed(2),
     cashSales: cashSales.toFixed(2),
     expectedCash: expectedCash.toFixed(2),
     counted: count?.counted ?? null,
@@ -487,7 +572,11 @@ export async function lockDay(
   const b = await getDayBalance(c, input.date);
   // These can never be overridden: money cannot be valued or would go negative.
   if (b.sales.missingRates.length) throw new AppError("RATE_MISSING", 409, `Set the rate for ${b.sales.missingRates.join(", ")} first.`, "पहले रेट डालें।");
-  if (new D(b.cashSales).lt(0)) throw new AppError("CREDIT_EXCEEDS_SALES", 409, "Udhari given is more than fuel sales. Check the entries.", "उधारी बिक्री से ज़्यादा है।");
+  if (new D(b.cashSales).lt(0))
+    throw new AppError("CREDIT_EXCEEDS_SALES", 409, "Udhari + UPI/card/bank received is more than the fuel sales. Check those amounts.", "उधारी + UPI/कार्ड बिक्री से ज़्यादा है।");
+  const badMode = b.collections.find((x) => new D(x.sales).lt(0));
+  if (badMode)
+    throw new AppError("MODE_TOTAL_TOO_LOW", 409, `${badMode.label} total is less than the ${badMode.label} entries already made. Check it.`, "मशीन का कुल कम है।");
   const soft = b.problems.filter((p) => !p.startsWith("Cash not counted"));
   const override = String(input.overrideReason ?? "").trim();
   if (soft.length && !owner.permissions.includes("closing.override"))
@@ -507,8 +596,15 @@ export async function lockDay(
     if (v.provisional.gt(0)) revLines.push({ acct: "4190", cr: v.provisional.toFixed(2), fuelTypeId: fuelIds[fuel] });
   }
   if (new D(b.sales.total).gt(0)) await j("DAY_SALES_POST", `Fuel sales ${input.date}`, [{ acct: "1900", dr: b.sales.total }, ...revLines]);
-  // 2. How the sales were settled: udhari already credited 1900 during the day; the rest came as cash.
-  if (new D(b.cashSales).gt(0)) await j("SALES_SETTLEMENT", `Cash fuel sales ${input.date}`, [{ acct: "1100", dr: b.cashSales, mode: "CASH" }, { acct: "1900", cr: b.cashSales }]);
+  // 2. How the sales were settled: udhari already credited 1900 during the day; UPI / card / bank sales
+  //    go to their clearing / bank accounts; the rest came as cash.
+  const settle: Line[] = [];
+  if (new D(b.cashSales).gt(0)) settle.push({ acct: "1100", dr: b.cashSales, mode: "CASH" });
+  for (const x of b.collections) {
+    if (new D(x.sales).gt(0)) settle.push({ acct: COLLECTION_MODES.find((m) => m.mode === x.mode)!.account, dr: x.sales });
+  }
+  const settled = settle.reduce((a, l) => a.plus(l.dr!), new D(0));
+  if (settled.gt(0)) await j("SALES_SETTLEMENT", `Fuel sales settled ${input.date}`, [...settle, { acct: "1900", cr: settled.toFixed(2) }]);
   // 3. Cash short / excess goes to suspense, never to expenses.
   const diff = new D(b.difference ?? "0");
   if (!diff.isZero())
@@ -535,6 +631,8 @@ export async function lockDay(
     sales: b.sales,
     udhariGiven: b.udhariGiven,
     udhariReceived: b.udhariReceived,
+    collections: b.collections.filter((x) => x.total != null).map((x) => ({ mode: x.mode, total: x.total, sales: x.sales })),
+    nonCashSales: b.nonCashSales,
     otherIn: b.otherIn,
     payments: b.paymentsAll,
     cashSales: b.cashSales,
@@ -567,11 +665,14 @@ export async function lockDay(
 export async function endDay(
   c: ClientBase,
   user: { id: string; role: string; permissions: string[] },
-  input: { date: string; counted: string; overrideReason?: string | null },
+  input: { date: string; counted: string; overrideReason?: string | null; collections?: Record<string, string> | null },
   idempotencyKey: string,
 ) {
   if (!user.permissions.includes("cash.count") && user.role !== "OWNER") throw Errors.forbidden();
   const site = await siteId(c);
+  const live = await goLiveDate(c);
+  if (live && input.date <= live)
+    throw new AppError("BEFORE_GO_LIVE", 409, "This day is before go-live (the starting readings close it). There is nothing to end.", "यह दिन शुरू होने से पहले का है।");
   const status = await dayStatus(c, site, input.date);
   if (status === "LOCKED") throw new AppError("ALREADY_ENDED", 409, "This day is already ended.", "यह दिन पहले ही बंद है।");
   const can = (await c.query("SELECT can_end_business_day($1, $2) AS ok", [site, input.date])).rows[0].ok;
@@ -583,6 +684,7 @@ export async function endDay(
       "यह दिन कल सुबह 8 बजे की रीडिंग के बाद बंद होगा।",
     );
   if (status === "SUBMITTED") await reopenDay(c, { role: "OWNER" }, input.date); // a recount inside the same End day
+  if (input.collections) await declareCollections(c, user, { date: input.date, amounts: input.collections }, `${idempotencyKey}:col`);
   const counted = await countCash(c, user, { date: input.date, counted: input.counted }, idempotencyKey);
   const lock = await lockDay(c, user, { date: input.date, overrideReason: input.overrideReason });
   return { ...counted, integrityCode: lock.integrityCode };
