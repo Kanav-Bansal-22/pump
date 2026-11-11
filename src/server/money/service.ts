@@ -134,6 +134,11 @@ export async function findOrCreateParty(
     const same = await c.query("SELECT name FROM parties WHERE kind = $1 AND phone = $2", [kind, phone]);
     if (same.rowCount)
       throw new AppError("DUPLICATE_PARTY", 409, `This phone number already belongs to "${same.rows[0].name}". Choose them from the list.`, "यह नंबर पहले से है। सूची से चुनें।");
+  } else {
+    const same = await c.query("SELECT id FROM parties WHERE kind = $1 AND active AND lower(name) = lower($2)", [kind, name]);
+    if (same.rowCount === 1 && (kind === "SUPPLIER" || kind === "LENDER")) return same.rows[0].id; // "HPCL" every day = same supplier
+    if (same.rowCount)
+      throw new AppError("DUPLICATE_PARTY", 409, `"${name}" already exists. Choose them from the list, or add a phone number if this is a different person.`, "यह नाम पहले से है। सूची से चुनें।");
   }
   const r = await c.query("INSERT INTO parties (kind, name, phone, created_by) VALUES ($1,$2,$3,$4) RETURNING id", [kind, name, phone, userId]);
   return r.rows[0].id;
@@ -444,8 +449,9 @@ export async function countCash(c: ClientBase, user: { id: string }, input: { da
     throw Errors.badInput("Counted cash must be a number like 859314.");
   }
   const dates = await entryDates(c);
-  if (input.date !== dates.today && input.date !== dates.yesterday)
-    throw new AppError("BAD_DAY", 409, "You can count cash only for the day being closed.", "केवल आज के दिन की गिनती।");
+  // Today, or any earlier day not yet ended (e.g. someone forgot to end yesterday before 11 AM).
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(input.date) || input.date > dates.today)
+    throw new AppError("BAD_DAY", 409, "You can count cash only for today or an earlier day.", "केवल आज या पिछले दिन की गिनती।");
   const bal = await getDayBalance(c, input.date);
   await c.query(
     "INSERT INTO cash_counts (site_id, business_date, counted, expected_at_count, counted_by, idempotency_key) VALUES ($1,$2,$3,$4,$5,$6)",
@@ -471,7 +477,8 @@ export async function lockDay(
   owner: { id: string; role: string; permissions: string[] },
   input: { date: string; overrideReason?: string | null },
 ) {
-  if (owner.role !== "OWNER" || !owner.permissions.includes("closing.lock")) throw Errors.forbidden();
+  // Anyone with closing.lock may end a clean day; problems need closing.override (owner) + reason.
+  if (!owner.permissions.includes("closing.lock")) throw Errors.forbidden();
   const site = await siteId(c);
   const day = await c.query("SELECT status FROM business_days WHERE site_id = $1 AND business_date = $2 FOR UPDATE", [site, input.date]);
   if (day.rows[0]?.status !== "SUBMITTED")
@@ -483,9 +490,10 @@ export async function lockDay(
   if (new D(b.cashSales).lt(0)) throw new AppError("CREDIT_EXCEEDS_SALES", 409, "Udhari given is more than fuel sales. Check the entries.", "उधारी बिक्री से ज़्यादा है।");
   const soft = b.problems.filter((p) => !p.startsWith("Cash not counted"));
   const override = String(input.overrideReason ?? "").trim();
+  if (soft.length && !owner.permissions.includes("closing.override"))
+    throw new AppError("CLOSING_GUARD", 409, `Cannot end the day yet: ${soft.join("; ")}. Fix these, or ask the owner.`, "पहले ये ठीक करें या मालिक से कहें।");
   if (soft.length && override.length < 5)
-    throw new AppError("CLOSING_GUARD", 409, `Cannot lock yet: ${soft.join("; ")}. Fix these, or lock anyway with a written reason.`, "पहले ये ठीक करें या कारण लिखकर बंद करें।");
-  if (soft.length && !owner.permissions.includes("closing.override")) throw Errors.forbidden();
+    throw new AppError("CLOSING_GUARD", 409, `Cannot end the day yet: ${soft.join("; ")}. Fix these, or end anyway with a written reason.`, "पहले ये ठीक करें या कारण लिखकर बंद करें।");
 
   const fuelIds = Object.fromEntries((await c.query("SELECT code, id FROM fuel_types")).rows.map((r) => [r.code, r.id]));
   const REV: Record<string, string> = { PETROL: "4100", DIESEL: "4110" };
@@ -550,6 +558,53 @@ export async function lockDay(
     [site, input.date, owner.id, soft.length ? override : null],
   );
   return { integrityCode: code };
+}
+
+/**
+ * "End day" in one step: record the counted cash, submit and lock, all in one transaction.
+ * If the lock is refused (missing readings, rate not set ...) nothing is saved and the reasons come back.
+ */
+export async function endDay(
+  c: ClientBase,
+  user: { id: string; role: string; permissions: string[] },
+  input: { date: string; counted: string; overrideReason?: string | null },
+  idempotencyKey: string,
+) {
+  if (!user.permissions.includes("cash.count") && user.role !== "OWNER") throw Errors.forbidden();
+  const site = await siteId(c);
+  const status = await dayStatus(c, site, input.date);
+  if (status === "LOCKED") throw new AppError("ALREADY_ENDED", 409, "This day is already ended.", "यह दिन पहले ही बंद है।");
+  const can = (await c.query("SELECT can_end_business_day($1, $2) AS ok", [site, input.date])).rows[0].ok;
+  if (!can)
+    throw new AppError(
+      "TOO_EARLY",
+      409,
+      `${new Date(`${input.date}T00:00:00`).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })} is still running until the next day's 8 AM closing. End it then, after the nozzle readings.`,
+      "यह दिन कल सुबह 8 बजे की रीडिंग के बाद बंद होगा।",
+    );
+  if (status === "SUBMITTED") await reopenDay(c, { role: "OWNER" }, input.date); // a recount inside the same End day
+  const counted = await countCash(c, user, { date: input.date, counted: input.counted }, idempotencyKey);
+  const lock = await lockDay(c, user, { date: input.date, overrideReason: input.overrideReason });
+  return { ...counted, integrityCode: lock.integrityCode };
+}
+
+/** All customers with their udhari position (for the register's drop-down and the customers page). */
+export async function customerList(c: ClientBase) {
+  const r = await c.query(
+    `SELECT p.id, p.name, p.phone,
+            COALESCE(SUM(l.debit - l.credit) FILTER (WHERE e.source_type = 'OPENING_BALANCE'), 0)::numeric(14,2)::text AS opening,
+            COALESCE(SUM(l.debit) FILTER (WHERE e.source_type = 'CREDIT_SALE'), 0)::numeric(14,2)::text AS given,
+            COALESCE(SUM(l.credit) FILTER (WHERE e.source_type = 'CUSTOMER_REPAYMENT'), 0)::numeric(14,2)::text AS received,
+            COALESCE(SUM(l.debit - l.credit), 0)::numeric(14,2)::text AS balance,
+            MAX(e.business_date)::text AS last_date,
+            (SELECT string_agg(DISTINCT m.vehicle_no, ', ') FROM money_entries m WHERE m.party_id = p.id AND m.vehicle_no IS NOT NULL) AS vehicles
+       FROM parties p
+       LEFT JOIN journal_lines l ON l.party_id = p.id
+       LEFT JOIN journal_entries e ON e.id = l.entry_id
+      WHERE p.kind = 'CUSTOMER' AND p.active
+      GROUP BY p.id ORDER BY lower(p.name)`,
+  );
+  return r.rows as Array<{ id: string; name: string; phone: string | null; opening: string; given: string; received: string; balance: string; last_date: string | null; vehicles: string | null }>;
 }
 
 // ---------------------------------------------------------------------------

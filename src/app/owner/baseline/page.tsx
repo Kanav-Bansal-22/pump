@@ -1,4 +1,5 @@
-import { Bi, Card, Page } from "@/components/ui";
+import { Bi, Card } from "@/components/ui";
+import { Page } from "@/components/page";
 import { niceTime, num } from "@/lib/format";
 import { pool } from "@/server/db";
 import { getBoard } from "@/server/meters/service";
@@ -13,7 +14,7 @@ export default async function BaselinePage() {
   const c = await pool().connect();
   const board = await getBoard(c).finally(() => c.release());
   return (
-    <Page title={<Bi en="Starting readings (go-live)" hi="शुरुआती रीडिंग" />} back="/">
+    <Page title={<Bi en="Starting readings (go-live)" hi="शुरुआती रीडिंग" />} back="/settings">
       <Card className="mb-4">
         <p className="text-base">
           Enter each nozzle&apos;s meter reading <b>once</b>, on go-live day, at the 8 AM closing. Staff readings carry on from

@@ -113,7 +113,7 @@ function NozzleRow({ nozzle }: { nozzle: Layout["stations"][number]["nozzles"][n
   const { state, save } = useSave();
   return (
     <form
-      className="rounded-xl border border-line p-3"
+      className="rounded border border-line p-3"
       onSubmit={(e) => {
         e.preventDefault();
         const f = new FormData(e.currentTarget);
@@ -127,7 +127,7 @@ function NozzleRow({ nozzle }: { nozzle: Layout["stations"][number]["nozzles"][n
         <input
           name="label"
           defaultValue={nozzle.label}
-          className="min-w-0 flex-1 rounded-lg border-2 border-line bg-white px-3 py-2 text-lg text-black"
+          className="min-w-0 flex-1 rounded-lg border border-line bg-white px-3 py-2 text-lg text-black"
         />
         <label className="flex items-center gap-1 text-sm">
           <input type="checkbox" name="active" defaultChecked={nozzle.active} className="h-5 w-5" /> On

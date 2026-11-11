@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
-import { Bi, Card, Page } from "@/components/ui";
+import { Bi, Card } from "@/components/ui";
+import { Page } from "@/components/page";
 import { firstRun } from "@/server/session";
 import { SetupForm } from "./setup-form";
 

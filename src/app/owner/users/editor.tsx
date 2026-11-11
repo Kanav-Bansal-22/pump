@@ -56,7 +56,7 @@ function AddUser() {
         <Field label="Temporary password (8+) / अस्थायी पासवर्ड" name="tempPassword" required />
         <label className="mb-4 block">
           <span className="mb-1 block text-base font-medium">Role / भूमिका</span>
-          <select name="role" defaultValue="STAFF" className="w-full rounded-xl border-2 border-line bg-white px-4 py-3 text-lg text-black">
+          <select name="role" defaultValue="STAFF" className="inp w-full">
             <option value="STAFF">Staff / कर्मचारी</option>
             <option value="OWNER">Owner / मालिक</option>
           </select>
@@ -87,13 +87,13 @@ function UserCard({ u, isMe }: { u: U; isMe: boolean }) {
         </div>
       </div>
       <div className="mt-3 flex flex-wrap gap-2">
-        <button type="button" className="rounded-lg border-2 border-line px-3 py-2" onClick={() => setShowReset((x) => !x)}>
+        <button type="button" className="rounded-lg border border-line px-3 py-2" onClick={() => setShowReset((x) => !x)}>
           Reset password
         </button>
         {!isMe && (
           <button
             type="button"
-            className="rounded-lg border-2 border-line px-3 py-2"
+            className="rounded-lg border border-line px-3 py-2"
             onClick={() => run({ action: "setActive", userId: u.id, active: !u.active }, u.active ? "Login disabled and signed out." : "Login enabled.")}
           >
             {u.active ? "Disable login" : "Enable login"}
@@ -101,7 +101,7 @@ function UserCard({ u, isMe }: { u: U; isMe: boolean }) {
         )}
         <button
           type="button"
-          className="rounded-lg border-2 border-line px-3 py-2"
+          className="rounded-lg border border-line px-3 py-2"
           onClick={() => run({ action: "logoutEverywhere", userId: u.id }, "Signed out on all phones.")}
         >
           Sign out all phones

@@ -4,13 +4,10 @@ import type { InputHTMLAttributes, ReactNode } from "react";
 
 export function Field({ label, hint, ...props }: { label: ReactNode; hint?: string } & InputHTMLAttributes<HTMLInputElement>) {
   return (
-    <label className="mb-4 block">
-      <span className="mb-1 block text-base font-medium">{label}</span>
-      <input
-        {...props}
-        className="w-full rounded-xl border-2 border-line bg-white px-4 py-3 text-lg text-black outline-none focus:border-brand"
-      />
-      {hint && <span className="mt-1 block text-sm text-muted">{hint}</span>}
+    <label className="mb-2.5 block">
+      <span className="mb-0.5 block text-sm font-medium text-muted">{label}</span>
+      <input {...props} className="inp w-full" />
+      {hint && <span className="mt-0.5 block text-xs text-muted">{hint}</span>}
     </label>
   );
 }
@@ -25,29 +22,24 @@ export type SaveState =
 export function SaveStatus({ state }: { state: SaveState }) {
   if (state.kind === "saved")
     return (
-      <div role="status" className="mt-4 rounded-xl bg-green-100 p-4 text-lg font-semibold text-green-900">
-        ✅ {state.message}
+      <div role="status" className="mt-2 rounded border border-green-300 bg-green-50 px-2 py-1 text-sm font-medium text-green-900">
+        ✓ {state.message}
       </div>
     );
   if (state.kind === "error")
     return (
-      <div role="alert" className="mt-4 rounded-xl bg-red-100 p-4 text-lg font-semibold text-red-900">
-        ❌ {state.message}
-        {state.messageHi && <div className="mt-1 text-base font-normal">{state.messageHi}</div>}
+      <div role="alert" className="mt-2 rounded border border-red-300 bg-red-50 px-2 py-1 text-sm font-medium text-red-900">
+        ✗ NOT saved: {state.message}
+        {state.messageHi && <span className="ml-1 font-normal opacity-80">{state.messageHi}</span>}
       </div>
     );
   return null;
 }
 
 export function SubmitButton({ state, children }: { state: SaveState; children: ReactNode }) {
-  const saving = state.kind === "saving";
   return (
-    <button
-      type="submit"
-      disabled={saving}
-      className="w-full rounded-2xl bg-brand px-4 py-4 text-xl font-bold text-white disabled:opacity-60"
-    >
-      {saving ? "⏳ Saving… / सेव हो रहा है…" : children}
+    <button type="submit" disabled={state.kind === "saving"} className="btn w-full">
+      {state.kind === "saving" ? "Saving…" : children}
     </button>
   );
 }

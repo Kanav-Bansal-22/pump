@@ -1,48 +1,90 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 
-/** Bilingual label: English on top, Hindi below (smaller). */
+/** "English · हिंदी" on one line, Hindi smaller. */
 export function Bi({ en, hi }: { en: string; hi: string }) {
   return (
-    <span className="inline-flex flex-col leading-tight">
-      <span>{en}</span>
-      <span className="text-[0.8em] opacity-75">{hi}</span>
+    <span>
+      {en} <span className="text-[0.85em] font-normal opacity-70">· {hi}</span>
     </span>
   );
 }
 
-export function Page({ title, back, children }: { title: ReactNode; back?: string; children: ReactNode }) {
+const NAV = [
+  { href: "/", key: "register", en: "Register", hi: "रोकड़" },
+  { href: "/days", key: "days", en: "Daily records", hi: "दैनिक हिसाब" },
+  { href: "/customers", key: "customers", en: "Udhari customers", hi: "उधारी खाते" },
+  { href: "/settings", key: "settings", en: "Settings", hi: "सेटिंग" },
+] as const;
+
+/** Top bar with the pump name, navigation and the logged-in person. */
+export function Shell({
+  active,
+  user,
+  pump,
+  children,
+  wide,
+}: {
+  active?: (typeof NAV)[number]["key"];
+  user?: { name: string; role: string } | null;
+  pump?: string | null;
+  children: ReactNode;
+  wide?: boolean;
+}) {
   return (
-    <main className="mx-auto w-full max-w-3xl px-4 pb-16 pt-4">
-      <div className="mb-4 flex items-center gap-3">
-        {back && (
-          <Link href={back} className="rounded-lg border border-line px-3 py-2 text-base" aria-label="Back">
-            ←
-          </Link>
-        )}
-        <h1 className="text-2xl font-bold">{title}</h1>
+    <>
+      <header className="bg-brand text-white">
+        <div className={`mx-auto flex flex-wrap items-center gap-x-4 gap-y-1 px-3 py-1.5 ${wide ? "max-w-7xl" : "max-w-5xl"}`}>
+          <span className="font-bold">⛽ {pump ?? "Petrol Pump"}</span>
+          {user && (
+            <nav className="flex flex-wrap gap-1 text-[0.95rem]">
+              {NAV.filter((n) => n.key !== "settings" || user.role === "OWNER").map((n) => (
+                <Link
+                  key={n.key}
+                  href={n.href}
+                  className={`rounded px-2 py-0.5 ${active === n.key ? "bg-white font-semibold text-brand" : "hover:bg-white/15"}`}
+                >
+                  {n.en}
+                </Link>
+              ))}
+            </nav>
+          )}
+          {user && (
+            <span className="ml-auto flex items-center gap-2 text-sm opacity-90">
+              {user.name}
+              <form action="/logout" method="post">
+                <button className="rounded border border-white/40 px-2 py-0.5 text-xs hover:bg-white/15">Log out</button>
+              </form>
+            </span>
+          )}
+        </div>
+      </header>
+      <main className={`mx-auto w-full px-3 pb-10 pt-3 ${wide ? "max-w-7xl" : "max-w-5xl"}`}>{children}</main>
+    </>
+  );
+}
+
+/** A register panel: navy title bar + white body. */
+export function Panel({ title, right, children, className = "" }: { title: ReactNode; right?: ReactNode; children: ReactNode; className?: string }) {
+  return (
+    <section className={`overflow-hidden rounded border border-line bg-surface shadow-[0_1px_2px_rgba(0,0,0,0.04)] ${className}`}>
+      <div className="flex items-center justify-between gap-2 border-b border-line bg-[#e8eef5] px-3 py-1.5 text-[0.95rem] font-semibold text-brand">
+        <span>{title}</span>
+        {right && <span className="text-sm font-normal text-muted">{right}</span>}
       </div>
-      {children}
-    </main>
+      <div className="p-3">{children}</div>
+    </section>
   );
 }
 
 export function Card({ children, className = "" }: { children: ReactNode; className?: string }) {
-  return <section className={`rounded-2xl border border-line bg-surface p-4 ${className}`}>{children}</section>;
+  return <section className={`rounded border border-line bg-surface p-3 ${className}`}>{children}</section>;
 }
 
 export function BigLink({ href, children, disabled }: { href: string; children: ReactNode; disabled?: boolean }) {
-  if (disabled)
-    return (
-      <div className="flex min-h-24 items-center justify-center rounded-2xl border-2 border-dashed border-line p-4 text-center text-lg text-muted">
-        {children}
-      </div>
-    );
+  if (disabled) return <div className="rounded border border-dashed border-line p-3 text-center text-muted">{children}</div>;
   return (
-    <Link
-      href={href}
-      className="flex min-h-24 items-center justify-center rounded-2xl bg-brand p-4 text-center text-lg font-semibold text-white shadow-sm active:scale-[0.98]"
-    >
+    <Link href={href} className="block rounded border border-line bg-surface p-3 hover:border-accent hover:bg-soft">
       {children}
     </Link>
   );
@@ -51,8 +93,8 @@ export function BigLink({ href, children, disabled }: { href: string; children: 
 export function DemoBanner({ database }: { database: string }) {
   if (database === "pump_prod") return null;
   return (
-    <div className="bg-orange-500 px-4 py-2 text-center text-sm font-bold text-white">
-      DEMO DATA: practice only, not real accounts · डेमो डेटा: केवल अभ्यास
+    <div className="no-print bg-orange-500 px-3 py-0.5 text-center text-xs font-semibold text-white">
+      DEMO DATA: practice only, not real accounts · डेमो डेटा
     </div>
   );
 }

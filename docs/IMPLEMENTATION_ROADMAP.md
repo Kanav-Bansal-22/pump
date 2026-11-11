@@ -40,6 +40,14 @@ Phases follow the master prompt (Part 18). A phase is **complete only when its e
   - [x] 10 money tests on the register-page-224 day (79 total passing); browser check on demo DB; production build + `next start` smoke test
   - [x] Customer opening-balance import (2026-11-11): migration 0009 (import batches with state machine and file SHA-256, rows, results, one opening balance per customer); Excel template; .xlsx / .csv with flexible headers; amounts with Indian commas, minus / "Cr" / brackets = advance; preview marks NEW / MATCH_EXISTING (phone, else unique exact name) / ERROR (missing or bad amount, bad phone, duplicates in file, template example row, ambiguous name, customer already has an old balance); confirm only with zero problem rows and the old register total equal to the file total; same file never twice; OPENING_BALANCE journals (never revenue); one-off "Add old balance" on a customer statement; 17 tests; browser check on demo DB
   - [ ] Supplier bills (HPCL invoices), UPI/card split + settlements (postponed by owner), post-lock corrections, statement PDF file + WhatsApp share
+- [x] **UI redesign (owner request 2026-11-11): one register page, Tally-style**
+  - Compact light theme (14–15 px, navy title bars, bordered register tables); top bar: Register · Daily records · Udhari customers · Settings
+  - Register page: Rates (8 AM) · Udhari (customer drop-down searchable by name / phone / car no.; Given / Received; customer account shown below) · New udhari customer (name, amount, optional car no.) · Other entry (milk, HPCL, bank deposit, lube …) · Nozzle closing table (all 6, litres and ₹ as you type, one Save) · Day summary + **End day** (cash counted → count + lock in one step) · Day book
+  - Daily records page (every ended day, frozen figures) + day detail (readings, balance, entries, print); Udhari customers page (old balance, given, received, outstanding, car nos., totals, search, sort)
+  - Migration 0010: staff may set rates, see customer balances and end a CLEAN day (problems still need the owner's written reason)
+  - Migration 0011: a day can be ended only from 05:00 next morning (setting) — found when a day ended at 11 PM blocked udhari entries until 8 AM
+  - Blind count kept: the expected cash is not even sent to staff phones before the day is ended
+  - Old separate screens removed (readings, udhari given/received, payments, receipts, close-day, owner day/rates)
   - [ ] Backup script + phone download + health card
 - [ ] Phase 3 — Meter and fuel management
 - [ ] Phase 4 — Accounting

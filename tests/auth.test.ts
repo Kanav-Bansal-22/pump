@@ -93,9 +93,20 @@ describe("accounts and login", () => {
     if (!r.ok) return;
     const u = (await getSessionUser(c, r.token))!;
     expect(u.permissions).toEqual(
-      ["cash.count", "credit.create", "meter.enter", "meter.event.request", "payment.create", "receipt.create", "tests.record"].sort(),
+      [
+        "cash.count",
+        "closing.lock", // may end a CLEAN day (migration 0010)
+        "credit.create",
+        "customer.view_balance",
+        "meter.enter",
+        "meter.event.request",
+        "payment.create",
+        "price.set",
+        "receipt.create",
+        "tests.record",
+      ].sort(),
     );
-    for (const p of ["closing.lock", "users.manage", "report.financial", "meter.event.approve", "settings.manage"])
+    for (const p of ["closing.override", "users.manage", "report.financial", "meter.event.approve", "settings.manage", "import.run", "backup.manage"])
       expect(u.permissions).not.toContain(p);
   });
 

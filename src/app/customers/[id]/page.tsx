@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation";
-import { Bi, Card, Page } from "@/components/ui";
+import { Bi, Card } from "@/components/ui";
+import { Page } from "@/components/page";
 import { inr, niceDate } from "@/lib/format";
 import { pool } from "@/server/db";
 import { partyStatement } from "@/server/money/service";
@@ -18,7 +19,7 @@ const DESC: Record<string, string> = {
 };
 
 /** Customer statement: date, description, debit, credit, running balance, final outstanding. */
-export default async function Statement({ params }: PageProps<"/udhari/[id]">) {
+export default async function Statement({ params }: PageProps<"/customers/[id]">) {
   const user = await requireUser("customer.view_balance");
   const { id } = await params;
   if (!/^[0-9a-f-]{36}$/.test(id)) notFound();
@@ -30,12 +31,12 @@ export default async function Statement({ params }: PageProps<"/udhari/[id]">) {
   const c2 = await pool().connect();
   const today = await currentBusinessDate(c2).finally(() => c2.release());
   return (
-    <Page title={<Bi en={s.party.name} hi="ग्राहक खाता" />} back="/udhari">
+    <Page title={<Bi en={s.party.name} hi="ग्राहक खाता" />} back="/customers">
       <Card className="print:border-0">
         <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
           <div>
             <div className="text-sm text-muted">{site.rows[0]?.name} · Statement / खाता विवरण</div>
-            <div className="text-xl font-bold">{s.party.name}</div>
+            <div className="text-base font-bold">{s.party.name}</div>
             <div className="text-sm text-muted">{s.party.phone ?? ""}</div>
           </div>
           <PrintButton />
@@ -67,7 +68,7 @@ export default async function Statement({ params }: PageProps<"/udhari/[id]">) {
             </tbody>
           </table>
         </div>
-        <div className="mt-3 flex justify-between text-xl font-bold">
+        <div className="mt-3 flex justify-between text-base font-bold">
           <span>{s.balance.startsWith("-") ? "Advance with us / अग्रिम" : "Outstanding / बकाया"}</span>
           <span className="font-mono">{inr(s.balance.replace("-", ""))}</span>
         </div>

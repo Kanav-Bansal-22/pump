@@ -1,4 +1,5 @@
-import { Bi, Card, Page } from "@/components/ui";
+import { Bi, Card } from "@/components/ui";
+import { Page } from "@/components/page";
 import { inr, niceDate } from "@/lib/format";
 import { pool } from "@/server/db";
 import { currentBusinessDate } from "@/server/meters/service";
@@ -20,7 +21,7 @@ export default async function ImportPage() {
       )
     ).rows;
     return (
-      <Page title={<Bi en="Import old udhari" hi="पुराना उधारी खाता डालें" />} back="/">
+      <Page title={<Bi en="Import old udhari" hi="पुराना उधारी खाता डालें" />} back="/settings">
         <Card className="mb-4">
           <ol className="list-decimal space-y-1 pl-6 text-base">
             <li>

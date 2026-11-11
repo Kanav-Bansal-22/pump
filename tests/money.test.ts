@@ -3,7 +3,7 @@ import type { Client } from "pg";
 import { createUser } from "@/server/auth/service";
 import { createStandardLayout } from "@/server/config/service";
 import { runIdempotent } from "@/server/idempotency";
-import { countCash, createEntry, getDayBalance, lockDay, partyStatement, reopenDay, reverseEntry, type EntryInput } from "@/server/money/service";
+import { countCash, createEntry, endDay, findOrCreateParty, getDayBalance, lockDay, partyStatement, reopenDay, reverseEntry, type EntryInput } from "@/server/money/service";
 import { connect, tx } from "./helpers/db";
 
 let c: Client;
@@ -83,17 +83,26 @@ afterAll(async () => {
   await c.end();
 });
 
-describe("a quiet day (no sales, no udhari) can still be locked", () => {
-  it("locks with zero figures", async () => {
-    const quiet = "2026-01-15";
-    await c.query("SELECT lock_business_day_for_posting($1, $2)", [siteId, quiet]);
-    await c.query(
-      "INSERT INTO cash_counts (site_id, business_date, counted, expected_at_count, counted_by, idempotency_key) VALUES ($1,$2,0,0,$3,$4)",
-      [siteId, quiet, staff.id, key()],
-    );
-    await c.query("UPDATE business_days SET status='SUBMITTED', submitted_by=$3, submitted_at=now() WHERE site_id=$1 AND business_date=$2", [siteId, quiet, staff.id]);
-    const r = await inTx(() => lockDay(c, owner, { date: quiet, overrideReason: "pump closed for repairs" }));
+describe("End day timing", () => {
+  it("today cannot be ended before tomorrow morning's closing (setting on by default)", async () => {
+    await expect(inTx(() => endDay(c, owner, { date: today, counted: "0" }, key()))).rejects.toThrow(/still running until the next day.s 8 AM closing/);
+    // the remaining tests end "today" on purpose (they cannot wait for tomorrow): switch the rule off here
+    await c.query("UPDATE settings SET value = 'false' WHERE key = 'end_day_from_next_morning'");
+  });
+});
+
+describe("End day with problems (no readings at all)", () => {
+  const quiet = "2026-01-15";
+  it("staff cannot end it; nothing is saved, not even the cash count", async () => {
+    await expect(inTx(() => endDay(c, staff, { date: quiet, counted: "0" }, key()))).rejects.toThrow(/Cannot end the day yet: Readings missing.*ask the owner/);
+    expect((await c.query("SELECT count(*)::int n FROM cash_counts WHERE business_date = $1", [quiet])).rows[0].n).toBe(0);
+    expect((await c.query("SELECT status FROM business_days WHERE business_date = $1", [quiet])).rows[0]?.status ?? "OPEN").toBe("OPEN");
+  });
+  it("owner must write a reason, then the day ends with zero figures", async () => {
+    await expect(inTx(() => endDay(c, owner, { date: quiet, counted: "0" }, key()))).rejects.toThrow(/end anyway with a written reason/);
+    const r = await inTx(() => endDay(c, owner, { date: quiet, counted: "0", overrideReason: "pump closed for repairs" }, key()));
     expect(r.integrityCode).toMatch(/^[0-9A-F]{8}$/);
+    await expect(inTx(() => endDay(c, owner, { date: quiet, counted: "0" }, key()))).rejects.toThrow(/already ended/);
   });
 });
 
@@ -176,8 +185,9 @@ describe("a register day: entries -> balance -> count -> lock", () => {
     expect(r.difference).toBe("-861.55");
   });
 
-  it("lock posts the day correctly and freezes it", async () => {
-    const { integrityCode } = await inTx(() => lockDay(c, owner, { date: today }));
+  it("staff may End day a CLEAN day (recount inside End day); it posts the day correctly and freezes it", async () => {
+    const { integrityCode, difference } = await inTx(() => endDay(c, staff, { date: today, counted: "11,06,100" }, key()));
+    expect(difference).toBe("-861.55");
     expect(integrityCode).toMatch(/^[0-9A-F]{8}$/);
     // fuel revenue = meter sales exactly; repayments / opening balances never in revenue
     expect(await bal("4100")).toBe("-91351.71");
@@ -196,5 +206,18 @@ describe("a register day: entries -> balance -> count -> lock", () => {
     await expect(dayEnd("S3:MS A1", "1029999.00")).rejects.toThrow(/DAY_LOCKED/);
     const snap = await c.query("SELECT figures->>'expectedCash' AS e, integrity_code FROM day_snapshots WHERE business_date = $1", [today]);
     expect(snap.rows[0]).toEqual({ e: "1106961.55", integrity_code: integrityCode });
+  });
+});
+
+describe("names", () => {
+  it("a second customer with the same name needs a phone number; 'HPCL' every day is the same supplier", async () => {
+    // tested on the name logic itself: today is already ended at this point, so no entry can be added
+    const add = (kind: "CUSTOMER" | "SUPPLIER", p: { name: string; phone?: string }) => inTx(() => findOrCreateParty(c, owner.id, kind, p));
+    await add("CUSTOMER", { name: "Sukhi Transport" });
+    await expect(add("CUSTOMER", { name: "sukhi  transport" })).rejects.toThrow(/already exists/);
+    await add("CUSTOMER", { name: "Sukhi Transport", phone: "9800011122" }); // a different person, told apart by phone
+    const hpcl = (await c.query("SELECT id FROM parties WHERE kind = 'SUPPLIER' AND lower(name) = 'hpcl'")).rows[0].id; // paid earlier today
+    expect(await add("SUPPLIER", { name: "hpcl" })).toBe(hpcl);
+    expect((await c.query("SELECT count(*)::int n FROM parties WHERE kind = 'SUPPLIER' AND lower(name) = 'hpcl'")).rows[0].n).toBe(1);
   });
 });

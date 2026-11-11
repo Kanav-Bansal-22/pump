@@ -63,9 +63,9 @@ export function ImportWizard({ today }: { today: string }) {
         <Card>
           <label className="mb-3 block text-base">
             Balances as on (date) / किस तारीख का बकाया
-            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="ml-2 rounded-lg border-2 border-line bg-white px-2 py-1 text-black" />
+            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="ml-2 rounded-lg border border-line bg-white px-2 py-1 text-black" />
           </label>
-          <label className="block rounded-2xl border-2 border-dashed border-brand p-6 text-center text-lg">
+          <label className="block rounded border border-dashed border-brand p-4 text-center text-lg">
             📄 Choose the Excel / CSV file / फ़ाइल चुनें
             <input type="file" accept=".xlsx,.csv" className="mt-3 block w-full text-base" onChange={(e) => upload(e.target.files?.[0])} />
           </label>
@@ -79,14 +79,14 @@ export function ImportWizard({ today }: { today: string }) {
           <Card>
             <h2 className="text-lg font-bold">{preview.fileName}</h2>
             <div className="mt-2 grid grid-cols-3 gap-2 text-center">
-              <div className="rounded-xl bg-green-100 p-2 text-green-900">
-                <div className="text-2xl font-bold">{preview.counts.NEW}</div>new customers
+              <div className="rounded bg-green-100 p-2 text-green-900">
+                <div className="text-lg font-bold">{preview.counts.NEW}</div>new customers
               </div>
-              <div className="rounded-xl bg-blue-100 p-2 text-blue-900">
-                <div className="text-2xl font-bold">{preview.counts.MATCH_EXISTING}</div>already in app
+              <div className="rounded bg-blue-100 p-2 text-blue-900">
+                <div className="text-lg font-bold">{preview.counts.MATCH_EXISTING}</div>already in app
               </div>
-              <div className={`rounded-xl p-2 ${preview.counts.ERROR ? "bg-red-100 text-red-900" : "bg-gray-100 text-gray-700"}`}>
-                <div className="text-2xl font-bold">{preview.counts.ERROR}</div>problems
+              <div className={`rounded p-2 ${preview.counts.ERROR ? "bg-red-100 text-red-900" : "bg-gray-100 text-gray-700"}`}>
+                <div className="text-lg font-bold">{preview.counts.ERROR}</div>problems
               </div>
             </div>
             <div className="mt-3 text-base">
@@ -122,16 +122,16 @@ export function ImportWizard({ today }: { today: string }) {
           </Card>
 
           {preview.counts.ERROR > 0 ? (
-            <Card className="border-2 border-red-400">
+            <Card className="border border-red-400">
               <div className="text-base">
                 Fix the {preview.counts.ERROR} red row(s) in the Excel file, then upload it again. Nothing has been saved.
               </div>
-              <button type="button" className="mt-3 rounded-xl border-2 border-line px-4 py-3" onClick={() => setPreview(null)}>
+              <button type="button" className="mt-3 rounded border border-line px-3 py-1.5" onClick={() => setPreview(null)}>
                 ← Upload a corrected file
               </button>
             </Card>
           ) : (
-            <Card className="border-2 border-green-700">
+            <Card className="border border-green-700">
               <label className="block">
                 <span className="mb-1 block text-lg font-semibold">
                   Total udhari written in the old register
@@ -142,19 +142,19 @@ export function ImportWizard({ today }: { today: string }) {
                   inputMode="decimal"
                   value={registerTotal}
                   onChange={(e) => setRegisterTotal(e.target.value)}
-                  className="w-full rounded-xl border-2 border-line bg-white px-4 py-3 text-center font-mono text-2xl text-black"
+                  className="inp w-full"
                   placeholder="e.g. 4,74,902"
                 />
               </label>
               <div className="mt-3 grid grid-cols-2 gap-3">
-                <button type="button" className="rounded-2xl border-2 border-line px-3 py-4 text-lg" onClick={() => setPreview(null)}>
+                <button type="button" className="rounded border border-line px-3 py-2 text-lg" onClick={() => setPreview(null)}>
                   ← Cancel
                 </button>
                 <button
                   type="button"
                   disabled={!registerTotal || state.kind === "saving"}
                   onClick={confirm}
-                  className="rounded-2xl bg-green-700 px-3 py-4 text-lg font-bold text-white disabled:opacity-50"
+                  className="rounded bg-green-700 px-3 py-2 text-lg font-bold text-white disabled:opacity-50"
                 >
                   {state.kind === "saving" ? "⏳ Importing…" : "Confirm import"}
                 </button>
@@ -171,7 +171,7 @@ export function ImportWizard({ today }: { today: string }) {
           <div className="mt-2 text-lg">
             {done.created} new customers, {done.matched} added to existing customers · total {inr(done.total)}
           </div>
-          <Link href="/udhari" className="mt-3 block text-center text-lg text-brand underline">
+          <Link href="/customers" className="mt-3 block text-center text-lg text-brand underline">
             Open the Udhari list →
           </Link>
         </Card>

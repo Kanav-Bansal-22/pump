@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
-import { Bi, Page } from "@/components/ui";
+import { Bi } from "@/components/ui";
+import { Page } from "@/components/page";
 import { currentUser, firstRun } from "@/server/session";
 import { LoginForm } from "./login-form";
 

@@ -1,4 +1,5 @@
-import { Bi, Card, Page } from "@/components/ui";
+import { Bi, Card } from "@/components/ui";
+import { Page } from "@/components/page";
 import { niceTime } from "@/lib/format";
 import { pool } from "@/server/db";
 import { requireUser } from "@/server/session";
@@ -23,8 +24,8 @@ export default async function BackupsPage() {
     const backupAge = hours(lastOk?.finished_at ?? null);
     const dlAge = hours(lastDl);
     return (
-      <Page title={<Bi en="Backups" hi="बैकअप" />} back="/">
-        <Card className={`mb-4 border-2 ${backupAge < 26 ? "border-green-600" : "border-red-600"}`}>
+      <Page title={<Bi en="Backups" hi="बैकअप" />} back="/settings">
+        <Card className={`mb-4 border ${backupAge < 26 ? "border-green-600" : "border-red-600"}`}>
           <div className="text-lg font-bold">{backupAge < 26 ? "✅ Backup is recent" : "🔴 No backup in the last 26 hours"}</div>
           <div className="text-base">Last good backup: {lastOk ? niceTime(new Date(lastOk.finished_at).toISOString()) : "never"}</div>
           <div className={`mt-2 text-base ${dlAge < 26 ? "" : "font-semibold text-orange-600"}`}>
