@@ -23,16 +23,16 @@ export function NewCustomer({ dates }: { dates: { today: string; yesterday: stri
           e.preventDefault();
           if (!day) return setState({ kind: "error", message: "Choose the day." });
           if (phone && phone.length !== 10) return setState({ kind: "error", message: "Mobile number must have 10 digits (or leave it empty)." });
-          const r = await run(
+          run(
             { kind: "CREDIT_SALE", businessDate: day, party: { name, phone: phone || null }, amount, vehicleNo: vehicle || null },
             `${name.trim()} added with udhari ${inr(amount.replace(/,/g, ""))}.`,
-          );
-          if (r) {
+          () => {
             setName("");
             setAmount("");
             setVehicle("");
             setPhone("");
-          }
+          },
+        );
         }}
       >
         <input className="inp min-w-40 flex-[2]" placeholder="Customer name · नाम" value={name} onChange={(e) => setName(e.target.value)} />

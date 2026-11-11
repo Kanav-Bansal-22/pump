@@ -33,15 +33,15 @@ export function Income({ dates }: { dates: { today: string; yesterday: string | 
           e.preventDefault();
           if (!day) return setState({ kind: "error", message: "Choose the day." });
           if (!mode) return setState({ kind: "error", message: "Received in Cash, UPI or Card? Choose one.", messageHi: "नकद, UPI या कार्ड चुनें।" });
-          const r = await run(
+          run(
             { kind: t.kind, businessDate: day, amount, mode, description: desc || null },
             `${t.label}: ₹${amount} received by ${MODES.find((m) => m[0] === mode)![1].split(" ")[0]}.`,
-          );
-          if (r) {
+          () => {
             setAmount("");
             setDesc("");
             setMode("");
-          }
+          },
+        );
         }}
       >
         <div className="flex flex-wrap items-end gap-2">

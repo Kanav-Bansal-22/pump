@@ -10,6 +10,7 @@ export type SessionUser = {
   username: string;
   role: Role;
   mustChangePassword: boolean;
+  homeView: "register" | "simple";
   permissions: string[];
   sessionId: string;
 };
@@ -71,9 +72,10 @@ export async function createUser(
   const exists = await c.query("SELECT 1 FROM users WHERE username = $1", [username]);
   if (exists.rowCount) throw new AppError("USERNAME_TAKEN", 409, "That username is already used.", "यह यूज़रनेम पहले से है।");
   const r = await c.query(
-    `INSERT INTO users (name, username, password_hash, role_code, must_change_password)
-     VALUES ($1, $2, $3, $4, true) RETURNING id`,
-    [name, username, await hashPassword(input.tempPassword), input.role],
+    `INSERT INTO users (name, username, password_hash, role_code, must_change_password, home_view)
+     VALUES ($1, $2, $3, $4, true, $5) RETURNING id`,
+    // employees open the two-option phone view; change to "full register" for the counter laptop login
+    [name, username, await hashPassword(input.tempPassword), input.role, input.role === "STAFF" ? "simple" : "register"],
   );
   return r.rows[0].id as string;
 }
@@ -155,7 +157,7 @@ export async function getSessionUser(c: ClientBase, token: string | undefined | 
   if (!token || token.length < 20 || token.length > 100) return null;
   const r = await c.query(
     `SELECT s.id AS session_id, s.last_seen_at < now() - interval '10 minutes' AS stale,
-            u.id, u.name, u.username, u.role_code, u.must_change_password
+            u.id, u.name, u.username, u.role_code, u.must_change_password, u.home_view
        FROM sessions s JOIN users u ON u.id = s.user_id
       WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now() AND u.active`,
     [sha256(token)],
@@ -175,6 +177,7 @@ export async function getSessionUser(c: ClientBase, token: string | undefined | 
     username: s.username,
     role: s.role_code,
     mustChangePassword: s.must_change_password,
+    homeView: s.home_view,
     permissions: p.rows.map((x) => x.permission_code),
     sessionId: s.session_id,
   };
@@ -231,4 +234,10 @@ export async function setUserActive(c: ClientBase, actorId: string, userId: stri
 
 export function hasPermission(u: SessionUser | null, perm: string): boolean {
   return !!u && u.permissions.includes(perm);
+}
+
+/** Which screen a login opens: the phone view with two options, or the full register (e.g. the counter laptop). */
+export async function setHomeView(c: ClientBase, userId: string, view: "register" | "simple"): Promise<void> {
+  const r = await c.query("UPDATE users SET home_view = $2 WHERE id = $1", [userId, view]);
+  if (!r.rowCount) throw Errors.badInput("User not found.");
 }

@@ -88,10 +88,10 @@ export async function updateNozzle(c: ClientBase, id: string, input: { label: st
 
 export async function listUsers(c: ClientBase) {
   const r = await c.query(
-    `SELECT u.id, u.name, u.username, u.role_code AS role, u.active, u.must_change_password AS "mustChange",
+    `SELECT u.id, u.name, u.username, u.role_code AS role, u.active, u.must_change_password AS "mustChange", u.home_view AS "homeView",
             (u.locked_until > now()) AS locked,
             (SELECT max(created_at) FROM sessions s WHERE s.user_id = u.id) AS "lastLogin"
        FROM users u ORDER BY u.active DESC, u.role_code, u.name`,
   );
-  return r.rows as Array<{ id: string; name: string; username: string; role: string; active: boolean; mustChange: boolean; locked: boolean; lastLogin: Date | null }>;
+  return r.rows as Array<{ id: string; name: string; username: string; role: string; active: boolean; mustChange: boolean; homeView: "register" | "simple"; locked: boolean; lastLogin: Date | null }>;
 }

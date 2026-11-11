@@ -1,12 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { useRef, useState } from "react";
 import { CustomerPicker, type Cust } from "@/components/customer-picker";
-import { SaveStatus, type SaveState } from "@/components/forms";
+import { SaveStatus } from "@/components/forms";
+import { useAction } from "@/components/use-action";
 import { Bi, Panel } from "@/components/ui";
-import { apiPost, newEntryKey } from "@/lib/api-client";
+import { apiPost } from "@/lib/api-client";
 import { inr, niceDate } from "@/lib/format";
 import { DayChoice } from "./day-choice";
 
@@ -38,12 +38,10 @@ export function Udhari({ customers, dates }: { customers: Array<Cust & Record<st
   const [vehicle, setVehicle] = useState("");
   const [mode, setMode] = useState("CASH");
   const [day, setDay] = useState(dates.yesterday ? "" : dates.today);
-  const [state, setState] = useState<SaveState>({ kind: "idle" });
+  const { state, run, setState } = useAction<{ entryNo: string; amount: string }>("/api/entries");
   const [stmt, setStmt] = useState<Statement | null>(null);
-  const key = useRef(newEntryKey());
   const amountRef = useRef<HTMLInputElement>(null);
 
-  const router = useRouter();
   const load = async (id: string) => {
     const r = await apiPost<Statement>("/api/customers", { partyId: id });
     if (r.ok) setStmt(r.data);
@@ -57,32 +55,26 @@ export function Udhari({ customers, dates }: { customers: Array<Cust & Record<st
     }
   };
 
-  const save = async () => {
+  const save = () => {
     if (!cust) return setState({ kind: "error", message: "Select the customer first." });
     if (!day) return setState({ kind: "error", message: "Choose the day." });
-    setState({ kind: "saving" });
-    const r = await apiPost<{ entryNo: string; amount: string }>(
-      "/api/entries",
+    const who = cust;
+    run(
       {
         kind: type === "GIVEN" ? "CREDIT_SALE" : "CUSTOMER_REPAYMENT",
         businessDate: day,
-        party: { id: cust.id },
+        party: { id: who.id },
         amount,
         vehicleNo: type === "GIVEN" ? vehicle || null : null,
         mode: type === "RECEIVED" ? mode : null,
       },
-      key.current,
+      (d) => `#${d.entryNo}: ${type === "GIVEN" ? "udhari given to" : "received from"} ${who.name}, ${inr(d.amount)}`,
+      () => {
+        setAmount("");
+        setVehicle("");
+        load(who.id);
+      },
     );
-    if (!r.ok) {
-      if (r.error.code !== "NO_CONNECTION" && r.error.code !== "SERVER_ERROR") key.current = newEntryKey();
-      return setState({ kind: "error", message: r.error.message, messageHi: r.error.messageHi });
-    }
-    key.current = newEntryKey();
-    setState({ kind: "saved", message: `#${r.data.entryNo}: ${type === "GIVEN" ? "udhari given to" : "received from"} ${cust.name}, ${inr(r.data.amount)}` });
-    setAmount("");
-    setVehicle("");
-    await load(cust.id);
-    router.refresh(); // balances in the drop-down, day summary and day book
   };
 
   return (
@@ -140,6 +132,7 @@ export function Udhari({ customers, dates }: { customers: Array<Cust & Record<st
               <b className={`num text-base ${stmt.balance.startsWith("-") ? "text-green-700" : "text-red-700"}`}>{inr(stmt.balance.replace("-", ""))}</b>
             </span>
           </div>
+          <div className="overflow-x-auto">
           <table className="reg text-sm">
             <thead>
               <tr>
@@ -172,6 +165,7 @@ export function Udhari({ customers, dates }: { customers: Array<Cust & Record<st
               )}
             </tbody>
           </table>
+          </div>
           <div className="border-t border-line px-2 py-1 text-right text-xs">
             {stmt.lines.length > 8 && <span className="mr-2 text-muted">showing last 8 of {stmt.lines.length}</span>}
             <Link href={`/customers/${stmt.party.id}`} className="text-accent underline">

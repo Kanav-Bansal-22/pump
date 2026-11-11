@@ -20,6 +20,51 @@ function Row({ label, v, sign, bold, tone }: { label: string; v: string | null; 
   );
 }
 
+const hhmm = (iso: string) => new Date(iso).toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit" });
+
+/** UPI totals reported from the employees' phones, checked against the one QR's app total typed at End day. */
+function UpiByStaff({ s }: { s: Summary }) {
+  const chk = s.upiCheck!;
+  const d = chk.difference;
+  return (
+    <div className="mt-2 rounded border border-line">
+      <div className="bg-soft px-2 py-1 text-xs font-semibold">UPI by employee · कर्मचारी UPI</div>
+      <table className="reg text-sm">
+        <tbody>
+          {s.staffUpi.map((u) => (
+            <tr key={u.userId}>
+              <td>{u.name}</td>
+              <td className="text-xs text-muted">at {hhmm(u.at)}</td>
+              <td className="num">{inr(u.amount)}</td>
+            </tr>
+          ))}
+          <tr className="font-semibold">
+            <td colSpan={2}>Total reported by staff</td>
+            <td className="num">{inr(chk.staff)}</td>
+          </tr>
+          {chk.paytm != null && (
+            <tr className="font-semibold">
+              <td colSpan={2}>QR app total (typed at End day)</td>
+              <td className="num">{inr(chk.paytm)}</td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+      <div
+        className={`px-2 py-1 text-sm font-medium ${d == null ? "text-muted" : d === "0.00" ? "text-green-700" : "bg-orange-50 text-orange-900"}`}
+      >
+        {d == null
+          ? "Check: type the QR app's total for the day in the UPI box below."
+          : d === "0.00"
+            ? "✓ QR app total matches what staff reported."
+            : d.startsWith("-")
+              ? `⚠ Staff reported ${inr(d.slice(1))} MORE than the QR app shows. Check each person's figure.`
+              : `⚠ QR app shows ${inr(d)} more than staff reported (someone did not update). The app total is what counts.`}
+      </div>
+    </div>
+  );
+}
+
 /** The day's balance in the register's order, and the End day button. */
 export function DaySummary({ summary: s, isOwner, integrityCode }: { summary: Summary; isOwner: boolean; integrityCode: string | null }) {
   const { state, run, setState } = useAction<{ difference: string | null; integrityCode: string }>("/api/day");
@@ -55,6 +100,7 @@ export function DaySummary({ summary: s, isOwner, integrityCode }: { summary: Su
                   Fuel sold by {x.label}
                   <div className="text-xs text-muted">
                     {x.label} total {inr(x.total)}
+                    {x.source === "staff" && " (as reported by staff)"}
                     {x.alreadyEntered !== "0.00" && <> − udhari / other by {x.label} {inr(x.alreadyEntered)}</>}
                   </div>
                 </td>
@@ -91,6 +137,8 @@ export function DaySummary({ summary: s, isOwner, integrityCode }: { summary: Su
           Not in the cash drawer: received by UPI / card / bank {inr(s.nonCashIn)}, expenses paid by UPI / bank {inr(s.paymentsNonCash)}.
         </div>
       )}
+
+      {s.upiCheck && <UpiByStaff s={s} />}
 
       {!ended && s.problems.filter((p) => !p.startsWith("Cash not counted")).length > 0 && (
         <ul className="mt-2 list-disc rounded border border-orange-300 bg-orange-50 py-1 pl-6 pr-2 text-sm text-orange-900">

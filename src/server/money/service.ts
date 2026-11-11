@@ -19,6 +19,43 @@ export function collectionModeOf(paymentMode: string): string | null {
   )[paymentMode] ?? null;
 }
 
+/**
+ * An employee's UPI collected today, as a running total ("so far"): a new figure replaces the last one,
+ * so a retry or a double tap can never count twice.
+ */
+export async function setMyUpiTotal(
+  c: ClientBase,
+  user: { id: string; permissions: string[] },
+  input: { amount: string; businessDate?: string | null },
+  idempotencyKey: string,
+) {
+  if (!user.permissions.includes("receipt.create")) throw Errors.forbidden();
+  const site = await siteId(c);
+  const dates = await entryDates(c);
+  const date = input.businessDate ?? dates.today;
+  if (date !== dates.today && date !== dates.yesterday) throw Errors.badInput("UPI totals can only be given for today.");
+  let amount: string;
+  try {
+    amount = /^0+(\.0+)?$/.test(String(input.amount).trim()) ? "0.00" : parseAmount(input.amount);
+  } catch {
+    throw Errors.badInput("UPI total must be a number like 12500.");
+  }
+  await c.query("INSERT INTO staff_upi_totals (site_id, business_date, user_id, amount, idempotency_key) VALUES ($1,$2,$3,$4,$5)", [
+    site,
+    date,
+    user.id,
+    amount,
+    idempotencyKey,
+  ]);
+  await c.query("SELECT pg_notify('pump_events', $1)", [JSON.stringify({ type: "upi", date })]);
+  const mine = await c.query("SELECT amount::text, at FROM staff_upi_totals WHERE site_id = $1 AND business_date = $2 AND user_id = $3 ORDER BY at DESC", [
+    site,
+    date,
+    user.id,
+  ]);
+  return { businessDate: date, amount, history: mine.rows.map((r) => ({ amount: r.amount as string, at: new Date(r.at).toISOString() })) };
+}
+
 /** Save the day's machine totals (only the modes typed in). A changed total is a new row; the latest counts. */
 export async function declareCollections(
   c: ClientBase,
@@ -242,6 +279,8 @@ export type EntryInput = {
   fuelCode?: string | null;
   litres?: string | null;
   description?: string | null;
+  /** set after the person confirmed "yes, this is a new entry, not a repeat" */
+  confirmRepeat?: boolean | null;
 };
 
 export async function createEntry(
@@ -278,6 +317,31 @@ export async function createEntry(
   }
 
   const partyId = k.party ? await findOrCreateParty(c, user.id, k.party, input.party ?? {}) : null;
+
+  // Repeat protection: the same type + person + amount on the same day within a few minutes (from any
+  // phone or the laptop) is almost always a second tap or a re-entry after a network problem.
+  if (!input.confirmRepeat) {
+    const mins = Number((await c.query("SELECT value #>> '{}' v FROM settings WHERE key = 'repeat_entry_minutes'")).rows[0]?.v ?? 10);
+    const rep = await c.query(
+      `SELECT m.entry_no::text, u.name, EXTRACT(EPOCH FROM clock_timestamp() - m.entered_at)::int AS secs
+         FROM money_entries m JOIN users u ON u.id = m.entered_by
+        WHERE m.site_id = $1 AND m.business_date = $2 AND m.kind = $3 AND m.party_id IS NOT DISTINCT FROM $4 AND m.amount = $5
+          AND m.entered_at > clock_timestamp() - make_interval(mins => $6)
+          AND NOT EXISTS (SELECT 1 FROM money_entry_reversals r WHERE r.money_entry_id = m.id)
+        ORDER BY m.entered_at DESC LIMIT 1`,
+      [site, date, input.kind, partyId, amount, mins],
+    );
+    if (rep.rowCount) {
+      const r = rep.rows[0];
+      const ago = r.secs < 60 ? `${r.secs} sec` : `${Math.round(r.secs / 60)} min`;
+      throw new AppError(
+        "POSSIBLE_REPEAT",
+        409,
+        `This looks like a repeat of entry #${r.entry_no} (same ${k.en.toLowerCase()}, same amount) saved by ${r.name} ${ago} ago. If it is really a new one, press "Save anyway".`,
+        `यह #${r.entry_no} जैसी ही प्रविष्टि लगती है। नई है तो "Save anyway" दबाएँ।`,
+      );
+    }
+  }
   let fuelTypeId: string | null = null;
   if (input.fuelCode) {
     const f = await c.query("SELECT id FROM fuel_types WHERE code = $1", [input.fuelCode]);
@@ -454,11 +518,32 @@ export async function getDayBalance(c: ClientBase, date: string) {
   const declared = Object.fromEntries(
     (await c.query("SELECT mode, amount::text FROM v_day_collections WHERE site_id = $1 AND business_date = $2", [site, date])).rows.map((r) => [r.mode, r.amount]),
   ) as Record<string, string>;
+  // UPI reported by each employee (running totals; latest counts). One shared QR, so these are checked
+  // against the Paytm app's day total. Without a Paytm total, the employees' sum is used.
+  const staffUpi = (
+    await c.query("SELECT user_id, name, amount::text, at FROM v_staff_upi_totals WHERE site_id = $1 AND business_date = $2 ORDER BY name", [site, date])
+  ).rows as Array<{ user_id: string; name: string; amount: string; at: Date }>;
+  const staffUpiTotal = staffUpi.reduce((a, r) => a.plus(r.amount), new D(0));
+  const upiCheck = staffUpi.length
+    ? {
+        staff: staffUpiTotal.toFixed(2),
+        paytm: declared.UPI ?? null,
+        difference: declared.UPI != null ? new D(declared.UPI).minus(staffUpiTotal).toFixed(2) : null,
+      }
+    : null;
   const collections = COLLECTION_MODES.map((m) => {
     const already = sum((e) => ENTRY_KINDS[e.kind].dir === "IN" && collectionModeOf(e.mode_code) === m.mode);
-    const total = declared[m.mode] ?? null;
+    const fromStaff = m.mode === "UPI" && declared.UPI == null && staffUpi.length > 0;
+    const total = fromStaff ? staffUpiTotal.toFixed(2) : (declared[m.mode] ?? null);
     const sales = total == null ? new D(0) : new D(total).minus(already);
-    return { mode: m.mode, label: m.label, total, alreadyEntered: already.toFixed(2), sales: sales.toFixed(2) };
+    return {
+      mode: m.mode,
+      label: m.label,
+      total,
+      source: (total == null ? null : fromStaff ? "staff" : "machine") as "staff" | "machine" | null,
+      alreadyEntered: already.toFixed(2),
+      sales: sales.toFixed(2),
+    };
   });
   const nonCashSales = collections.reduce((a, x) => a.plus(x.sales), new D(0));
 
@@ -509,6 +594,8 @@ export async function getDayBalance(c: ClientBase, date: string) {
     nonCashIn: nonCashIn.toFixed(2),
     paymentsNonCash: paymentsAll.minus(paymentsCash).toFixed(2),
     collections,
+    staffUpi: staffUpi.map((r) => ({ userId: r.user_id, name: r.name, amount: r.amount, at: new Date(r.at).toISOString() })),
+    upiCheck,
     nonCashSales: nonCashSales.toFixed(2),
     cashSales: cashSales.toFixed(2),
     expectedCash: expectedCash.toFixed(2),
@@ -631,7 +718,9 @@ export async function lockDay(
     sales: b.sales,
     udhariGiven: b.udhariGiven,
     udhariReceived: b.udhariReceived,
-    collections: b.collections.filter((x) => x.total != null).map((x) => ({ mode: x.mode, total: x.total, sales: x.sales })),
+    collections: b.collections.filter((x) => x.total != null).map((x) => ({ mode: x.mode, total: x.total, source: x.source, sales: x.sales })),
+    staffUpi: b.staffUpi,
+    upiCheck: b.upiCheck,
     nonCashSales: b.nonCashSales,
     otherIn: b.otherIn,
     payments: b.paymentsAll,

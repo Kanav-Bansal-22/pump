@@ -21,6 +21,7 @@ export const POST = apiPost(
       fuelCode: z.enum(["PETROL", "DIESEL"]).nullable().optional(),
       litres: z.string().max(12).nullable().optional(),
       description: z.string().max(200).nullable().optional(),
+      confirmRepeat: z.boolean().nullable().optional(),
     }),
   },
   async ({ c, user, input, req }) => createEntry(c, user, input, req.headers.get("idempotency-key")!),

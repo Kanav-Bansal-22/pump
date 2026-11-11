@@ -15,6 +15,11 @@ export function newEntryKey(): string {
  * POSTs JSON. Never throws: network failures come back as a clear NOT-saved result so the
  * screen can keep the typed values and offer Retry.
  */
+/** Keep the same key when we do not know whether it was saved (retry must not save twice). */
+export function keepKey(code: string): boolean {
+  return code === "NO_CONNECTION" || code === "SERVER_ERROR" || code === "BAD_RESPONSE" || code === "POSSIBLE_REPEAT";
+}
+
 export async function apiPost<T = unknown>(path: string, body: unknown, entryKey?: string): Promise<ApiResult<T>> {
   try {
     const res = await fetch(path, {
@@ -35,8 +40,8 @@ export async function apiPost<T = unknown>(path: string, body: unknown, entryKey
       ok: false,
       error: {
         code: "NO_CONNECTION",
-        message: "NOT saved: no connection to the pump computer. Check Wi-Fi and press Retry.",
-        messageHi: "सेव नहीं हुआ: कंप्यूटर से कनेक्शन नहीं है। Wi-Fi देखें और फिर से दबाएँ।",
+        message: "No answer from the pump computer, so it may or may not have saved. Check Wi-Fi and press Save again: it will never be saved twice.",
+        messageHi: "कंप्यूटर से जवाब नहीं मिला। Wi-Fi देखें और फिर से सेव दबाएँ: दो बार नहीं जुड़ेगा।",
       },
     };
   }

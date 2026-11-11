@@ -12,6 +12,7 @@ export function Bi({ en, hi }: { en: string; hi: string }) {
 
 const NAV = [
   { href: "/", key: "register", en: "Register", hi: "रोकड़" },
+  { href: "/staff", key: "staff", en: "My page", hi: "मेरा पेज" },
   { href: "/days", key: "days", en: "Daily records", hi: "दैनिक हिसाब" },
   { href: "/customers", key: "customers", en: "Udhari customers", hi: "उधारी खाते" },
   { href: "/statements", key: "statements", en: "Statements", hi: "विवरण" },
@@ -27,7 +28,7 @@ export function Shell({
   wide,
 }: {
   active?: (typeof NAV)[number]["key"];
-  user?: { name: string; role: string } | null;
+  user?: { name: string; role: string; homeView?: string } | null;
   pump?: string | null;
   children: ReactNode;
   wide?: boolean;
@@ -39,7 +40,11 @@ export function Shell({
           <span className="font-bold">⛽ {pump ?? "Petrol Pump"}</span>
           {user && (
             <nav className="flex flex-wrap gap-1 text-[0.95rem]">
-              {NAV.filter((n) => (n.key !== "settings" && n.key !== "statements") || user.role === "OWNER").map((n) => (
+              {NAV.filter((n) =>
+                user.homeView === "simple"
+                  ? n.key === "staff" || n.key === "customers" // phone view: the two jobs and the customer list
+                  : n.key !== "staff" && ((n.key !== "settings" && n.key !== "statements") || user.role === "OWNER"),
+              ).map((n) => (
                 <Link
                   key={n.key}
                   href={n.href}

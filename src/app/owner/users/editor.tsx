@@ -4,9 +4,9 @@ import { useRouter } from "next/navigation";
 import { useRef, useState } from "react";
 import { Field, SaveStatus, SubmitButton, type SaveState } from "@/components/forms";
 import { Card } from "@/components/ui";
-import { apiPost, newEntryKey } from "@/lib/api-client";
+import { apiPost, keepKey, newEntryKey } from "@/lib/api-client";
 
-type U = { id: string; name: string; username: string; role: string; active: boolean; mustChange: boolean; locked: boolean; lastLogin: string | null };
+type U = { id: string; name: string; username: string; role: string; active: boolean; mustChange: boolean; homeView: "register" | "simple"; locked: boolean; lastLogin: string | null };
 
 function useUserAction() {
   const router = useRouter();
@@ -16,7 +16,10 @@ function useUserAction() {
   const run = async (body: unknown, okMsg: string) => {
     setState({ kind: "saving" });
     const r = await apiPost("/api/users", body, key.current);
-    if (!r.ok) return setState({ kind: "error", message: r.error.message, messageHi: r.error.messageHi });
+    if (!r.ok) {
+      if (!keepKey(r.error.code)) key.current = newEntryKey();
+      return setState({ kind: "error", message: r.error.message, messageHi: r.error.messageHi });
+    }
     key.current = newEntryKey();
     setState({ kind: "saved", message: okMsg });
     router.refresh();
@@ -85,6 +88,22 @@ function UserCard({ u, isMe }: { u: U; isMe: boolean }) {
           </div>
           <div className="text-sm text-muted">Last login: {u.lastLogin ?? "never"}</div>
         </div>
+        <label className="text-sm">
+          <span className="mr-1 text-muted">Opens:</span>
+          <select
+            className="inp"
+            value={u.homeView}
+            onChange={(e) =>
+              run(
+                { action: "setHomeView", userId: u.id, view: e.target.value },
+                e.target.value === "simple" ? "Will open the phone view (Udhari + My UPI)." : "Will open the full register.",
+              )
+            }
+          >
+            <option value="simple">Phone view: Udhari + My UPI</option>
+            <option value="register">Full register (counter laptop)</option>
+          </select>
+        </label>
       </div>
       <div className="mt-3 flex flex-wrap gap-2">
         <button type="button" className="rounded-lg border border-line px-3 py-2" onClick={() => setShowReset((x) => !x)}>

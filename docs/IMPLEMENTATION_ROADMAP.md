@@ -63,6 +63,12 @@ Phases follow the master prompt (Part 18). A phase is **complete only when its e
   - **Statements** page: daily / monthly / from–to; sales & income, how sales were received, day-wise register, expenses by head (cash vs UPI/bank), cash book (b/f, receipts, payments, c/f), udhari debtors (opening / Dr / Cr / closing in Dr-Cr), day book; Print / Save as PDF; Excel (one sheet per section)
   - Customer ledger: period filter, balance b/f, Debit / Credit / Balance Dr-Cr, closing c/f, print / PDF, Excel; **print all customer ledgers** (one per page) + Excel with one sheet per customer
   - 106 tests passing
+- [x] **Employee phones + double-entry protection (2026-11-12)**
+  - Migration 0013: each login opens either the **phone view** (`/staff`: Udhari given/received, new customer, *My UPI today*, my entries) or the full register (counter laptop). New staff logins default to the phone view; owner changes it on *Staff logins*
+  - *My UPI today*: the employee types the **net total received so far** on the one QR (not each payment); a new total replaces the old one, history kept (append-only `staff_upi_totals`)
+  - Register Day summary: *UPI by employee* (name, time, amount, total) checked against the QR app total typed at End day (matches / app shows more / staff reported more). If no app total is typed, the staff sum is used for the UPI line
+  - Double entry: same customer + same kind + same amount within 10 min (setting `repeat_entry_minutes`) → "looks like a repeat … Save anyway"; lost-reply retries reuse the same key and never save twice (checked in the browser with a dropped reply)
+  - 113 tests passing
   - [ ] Backup script + phone download + health card
 - [ ] Phase 3 — Meter and fuel management
 - [ ] Phase 4 — Accounting

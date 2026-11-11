@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { AutoRefresh } from "@/components/auto-refresh";
 import { Panel, Shell } from "@/components/ui";
 import { niceDate } from "@/lib/format";
@@ -20,6 +21,7 @@ export const dynamic = "force-dynamic";
 /** The register: everything for the day on one page. */
 export default async function RegisterPage() {
   const user = await requireUser();
+  if (user.homeView === "simple") redirect("/staff"); // employee phones open the two-option page
   const isOwner = user.role === "OWNER";
   const c = await pool().connect();
   try {

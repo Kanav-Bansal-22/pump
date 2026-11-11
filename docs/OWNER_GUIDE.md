@@ -20,7 +20,7 @@ Everyone with old balance, given, received, **outstanding** (red = owes, green =
 |---|---|
 | Import old udhari | Excel from the old register; checked against the register's total; never twice |
 | Starting readings | Each nozzle's meter on go-live day (once) |
-| Staff logins | Add staff, reset password, disable login, sign out a lost phone |
+| Staff logins | Add staff, reset password, disable login, sign out a lost phone; **Opens:** phone view (Udhari + My UPI) or full register (use full register for the counter laptop login) |
 | Backups | Back up now, download to phone |
 | Pump setup | Pump name, station and nozzle names |
 

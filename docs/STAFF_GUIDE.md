@@ -3,7 +3,14 @@
 फ़ोन पर पंप का Wi-Fi चालू करें → होम स्क्रीन पर **Petrol Pump** खोलें → अपना यूज़रनेम और पासवर्ड।
 *Use the pump Wi-Fi → open **Petrol Pump** from the home screen → your own username and password.*
 
-सब कुछ एक ही पेज पर है: **Register (रोकड़)**। *Everything is on one page.*
+फ़ोन पर **My page (मेरा पेज)** खुलता है, उसमें दो काम: **उधारी** और **मेरा आज का UPI**। काउंटर वाले लैपटॉप पर पूरा **Register (रोकड़)** खुलता है।
+*On your phone: My page with two jobs, udhari and my UPI today. The counter laptop shows the full register.*
+
+## फ़ोन पर · On your phone
+- **उधारी दी / मिली:** ग्राहक चुनें → **Given · दी** या **Received · मिली** → रकम → *Save*. नया ग्राहक: *New udhari customer*.
+- **मेरा आज का UPI:** QR पर आपको अब तक **कुल** कितना मिला, वह लिखें → *Save total*। हर पेमेंट अलग से नहीं, सिर्फ़ कुल रकम। बाद में नया कुल लिखेंगे तो पुराना बदल जाएगा।
+  *Type the total UPI you received so far today, not each payment. A new total replaces the old one.*
+- शाम को मालिक/काउंटर QR ऐप का कुल सबके जोड़ से मिलाते हैं।
 
 ## सुबह 8 बजे · 8 AM
 1. **Rates (आज का रेट):** पेट्रोल और डीज़ल का आज का रेट लिखें → *Save rates*.
@@ -16,11 +23,13 @@
 - **उधारी दी (Given):** *Udhari* में ग्राहक चुनें (नाम / फ़ोन / गाड़ी नंबर लिखकर खोजें) → **Given · दी** → रकम → गाड़ी नंबर → *Save*. नीचे ग्राहक का पूरा हिसाब दिखेगा।
 - **उधारी मिली (Received):** ग्राहक चुनें → **Received · मिली** → रकम → Cash / UPI → *Save*.
 - **नया ग्राहक:** *New udhari customer* → नाम, रकम, गाड़ी नंबर → *Add*.
-- **दूध, चाय, HPCL, बैंक जमा, लुब्रिकेंट:** *Other entry* → प्रकार चुनें → रकम → *Save*.
+- **दूध, चाय, HPCL, बैंक जमा:** *Expenses* → प्रकार → रकम → Cash या UPI → *Save*.
+- **लुब्रिकेंट / अन्य आमदनी:** *Lube / other income* → रकम → Cash / UPI / Card → *Save*.
 
 ## ध्यान दें · Remember
 - ✓ हरा = सेव हो गया। ✗ लाल **NOT saved** = सेव नहीं हुआ: कारण पढ़ें, ठीक करें, फिर *Save* दबाएँ।
-- *no connection* आए तो Wi-Fi देखें; लिखी हुई रकम मिटती नहीं, दोबारा *Save* दबाएँ (दो बार सेव नहीं होगा)।
+- ⚠ *Not confirmed* (जवाब नहीं मिला) आए तो Wi-Fi देखें; लिखी हुई रकम मिटती नहीं, दोबारा *Save* दबाएँ: **दो बार सेव नहीं होगा**।
+- ⚠ *looks like a repeat* आए = वही ग्राहक, वही रकम कुछ मिनट पहले सेव हो चुकी है। सच में दूसरी बार डीज़ल डाला हो तो ही **Save anyway** दबाएँ।
 - गलत एंट्री हो जाए तो **मालिक को बताएँ**: वे उसे कारण लिखकर रद्द करेंगे।
 - अपना पासवर्ड किसी को न बताएँ। हर एंट्री पर आपका नाम लिखा जाता है।
 - दो हफ़्ते तक कागज़ के रजिस्टर में भी लिखते रहें।

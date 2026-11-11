@@ -37,15 +37,15 @@ export function Expenses({ dates, isOwner }: { dates: { today: string; yesterday
           e.preventDefault();
           if (!day) return setState({ kind: "error", message: "Choose the day." });
           if (!paidBy) return setState({ kind: "error", message: "Was it paid in Cash or by UPI? Choose one.", messageHi: "नकद या UPI चुनें।" });
-          const r = await run(
+          run(
             { kind: t.kind, businessDate: day, expenseCode: t.expense ?? null, party: t.supplier ? { name: supplier } : null, amount, mode: paidBy, description: desc || null },
             `${t.label}: ₹${amount} paid by ${paidBy === "CASH" ? "cash" : "UPI"}.`,
-          );
-          if (r) {
+          () => {
             setAmount("");
             setDesc("");
             setMode("");
-          }
+          },
+        );
         }}
       >
         <div className="flex flex-wrap items-end gap-2">

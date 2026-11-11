@@ -16,7 +16,7 @@ export type SaveState =
   | { kind: "idle" }
   | { kind: "saving" }
   | { kind: "saved"; message: string }
-  | { kind: "error"; message: string; messageHi?: string };
+  | { kind: "error"; message: string; messageHi?: string; confirm?: () => void; unsure?: boolean };
 
 /** The one place that shows saved / NOT saved. Success only appears after the server confirms. */
 export function SaveStatus({ state }: { state: SaveState }) {
@@ -29,8 +29,16 @@ export function SaveStatus({ state }: { state: SaveState }) {
   if (state.kind === "error")
     return (
       <div role="alert" className="mt-2 rounded border border-red-300 bg-red-50 px-2 py-1 text-sm font-medium text-red-900">
-        ✗ NOT saved: {state.message}
+        {state.confirm ? "⚠ Not saved yet: " : state.unsure ? "⚠ Not confirmed: " : "✗ NOT saved: "}
+        {state.message}
         {state.messageHi && <span className="ml-1 font-normal opacity-80">{state.messageHi}</span>}
+        {state.confirm && (
+          <div className="mt-1.5 flex gap-2">
+            <button type="button" className="btn h-auto py-1 text-sm" onClick={state.confirm}>
+              Save anyway · फिर भी सेव करें
+            </button>
+          </div>
+        )}
       </div>
     );
   return null;

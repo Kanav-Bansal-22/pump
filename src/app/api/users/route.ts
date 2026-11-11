@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { createUser, resetPassword, revokeAllSessions, setUserActive } from "@/server/auth/service";
+import { createUser, resetPassword, revokeAllSessions, setHomeView, setUserActive } from "@/server/auth/service";
 import { apiPost } from "@/server/http";
 
 const Input = z.discriminatedUnion("action", [
@@ -13,6 +13,7 @@ const Input = z.discriminatedUnion("action", [
   z.object({ action: z.literal("resetPassword"), userId: z.uuid(), tempPassword: z.string().max(128) }),
   z.object({ action: z.literal("setActive"), userId: z.uuid(), active: z.boolean() }),
   z.object({ action: z.literal("logoutEverywhere"), userId: z.uuid() }),
+  z.object({ action: z.literal("setHomeView"), userId: z.uuid(), view: z.enum(["register", "simple"]) }),
 ]);
 
 /** Owner manages logins: create, reset password, deactivate, sign out of all phones (lost phone). */
@@ -28,5 +29,8 @@ export const POST = apiPost({ endpoint: "users", permission: "users.manage", inp
       return {};
     case "logoutEverywhere":
       return { revoked: await revokeAllSessions(c, input.userId) };
+    case "setHomeView":
+      await setHomeView(c, input.userId, input.view);
+      return {};
   }
 });
