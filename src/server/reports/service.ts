@@ -191,7 +191,7 @@ export async function periodStatement(c: ClientBase, p: Period) {
   // debtors (udhari)
   const debtors = (
     await c.query(
-      `SELECT p.id, p.name, p.phone,
+      `SELECT p.id, p.name, p.phone, p.active,
               COALESCE(SUM(l.debit - l.credit) FILTER (WHERE e.business_date < $1), 0)::numeric(14,2)::text AS opening,
               COALESCE(SUM(l.debit) FILTER (WHERE e.business_date BETWEEN $1 AND $2), 0)::numeric(14,2)::text AS debit,
               COALESCE(SUM(l.credit) FILTER (WHERE e.business_date BETWEEN $1 AND $2), 0)::numeric(14,2)::text AS credit,
@@ -201,7 +201,10 @@ export async function periodStatement(c: ClientBase, p: Period) {
         GROUP BY p.id ORDER BY lower(p.name)`,
       [p.from, p.to],
     )
-  ).rows.filter((r) => r.opening !== "0.00" || r.debit !== "0.00" || r.credit !== "0.00" || r.closing !== "0.00") as Array<{
+  ).rows.filter(
+    // hidden customers (test entries / merged into another) only when they still owe or are owed something
+    (r) => (r.active || r.opening !== "0.00" || r.closing !== "0.00") && (r.opening !== "0.00" || r.debit !== "0.00" || r.credit !== "0.00" || r.closing !== "0.00"),
+  ) as Array<{
     id: string; name: string; phone: string | null; opening: string; debit: string; credit: string; closing: string;
   }>;
   const dsum = (k: "opening" | "debit" | "credit" | "closing") => s2(debtors.reduce((a, r) => a.plus(r[k]), z()));

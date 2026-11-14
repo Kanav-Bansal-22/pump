@@ -4,7 +4,8 @@ import { AutoRefresh } from "@/components/auto-refresh";
 import { Panel, Shell } from "@/components/ui";
 import { niceDate } from "@/lib/format";
 import { pool, q } from "@/server/db";
-import { closingBusinessDate, getBoard, getRates } from "@/server/meters/service";
+import { D } from "@/server/money";
+import { closingBusinessDate, getBoard, getRates, openTests } from "@/server/meters/service";
 import { customerList, entryDates, getDayBalance, goLiveDate } from "@/server/money/service";
 import { requireUser } from "@/server/session";
 import { DayBook } from "./register/day-book";
@@ -14,6 +15,7 @@ import { NozzleClosing } from "./register/nozzle-closing";
 import { Expenses } from "./register/expenses";
 import { Income } from "./register/income";
 import { Rates } from "./register/rates";
+import { TestingFuel } from "./register/testing-fuel";
 import { Udhari } from "./register/udhari";
 
 export const dynamic = "force-dynamic";
@@ -41,6 +43,9 @@ export default async function RegisterPage() {
     const ratesToday = await getRates(c, dates.today);
     const ratesClosing = closingDate === dates.today ? ratesToday : await getRates(c, closingDate);
     const customers = await customerList(c);
+    const tests = await openTests(c);
+    const testLitres: Record<string, string> = {};
+    for (const t of tests.filter((x) => !x.voided)) testLitres[t.nozzleId] = new D(testLitres[t.nozzleId] ?? 0).plus(t.litres).toFixed(3);
     const closingStatus = (await c.query("SELECT status FROM business_days WHERE business_date = $1", [closingDate])).rows[0]?.status ?? "OPEN";
     const live = await goLiveDate(c);
     const beforeGoLive = !!live && closingDate <= live; // go-live morning: the starting readings closed it
@@ -104,7 +109,9 @@ export default async function RegisterPage() {
                 flags: b.openFlags,
               }))}
               rates={Object.fromEntries(ratesClosing.map((r) => [r.code, r.rate]))}
+              tests={testLitres}
             />
+            <TestingFuel nozzles={board.filter((b) => b.active && b.hasBaseline).map((b) => ({ id: b.nozzleId, label: b.label, station: b.stationName }))} tests={tests} />
             <DaySummary
               summary={
                 isOwner || summary.status === "LOCKED"
@@ -114,6 +121,7 @@ export default async function RegisterPage() {
               }
               isOwner={isOwner}
               integrityCode={snap?.integrity_code ?? null}
+              pump={site.name}
             />
             <DayBook
               books={[strip(summary), ...(summaryDate !== dates.today ? [strip(bookToday)] : [])].map((b) => ({ date: b.date, status: b.status, entries: b.entries }))}

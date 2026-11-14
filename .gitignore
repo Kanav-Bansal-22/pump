@@ -45,6 +45,7 @@ next-env.d.ts
 # backups and uploads (real data)
 /data/
 /backups/
+/imports/
 
 # local demo test logins
 .demo-logins.txt

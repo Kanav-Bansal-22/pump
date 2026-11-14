@@ -6,7 +6,7 @@ type Who = "app" | "owner" | "backup" | "super";
 /** Connects as one of the real database roles. "owner" = pump_migrator with SET ROLE pump_owner. */
 export async function connect(
   who: Who,
-  database?: "pump_test" | "pump_test_clean" | "pump_test_meters" | "pump_test_backup" | "pump_test_money" | "pump_test_import" | "pump_test_reports" | "pump_test_staff" | "pump_restored",
+  database?: "pump_test" | "pump_test_clean" | "pump_test_meters" | "pump_test_backup" | "pump_test_money" | "pump_test_import" | "pump_test_reports" | "pump_test_staff" | "pump_restored" | "pump_moved",
 ): Promise<Client> {
   const db = { ...inject("db"), ...(database ? { database } : {}) };
   const cfg = {

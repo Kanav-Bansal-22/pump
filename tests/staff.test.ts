@@ -1,9 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Client } from "pg";
 import { createUser } from "@/server/auth/service";
-import { createStandardLayout } from "@/server/config/service";
+import { createStandardLayout, setOwnQr, setTypeEachUpi } from "@/server/config/service";
+import { openTests, recordTest, voidTest } from "@/server/meters/service";
+import { dayMessage } from "@/components/whatsapp-share";
 import { runIdempotent } from "@/server/idempotency";
-import { createEntry, declareCollections, getDayBalance, setMyUpiTotal, type EntryInput } from "@/server/money/service";
+import { addMyUpi, cancelMyUpi, createEntry, declareCollections, getDayBalance, type EntryInput } from "@/server/money/service";
 import { connect, tx } from "./helpers/db";
 
 let c: Client;
@@ -24,7 +26,7 @@ async function inTx<T>(fn: () => Promise<T>): Promise<T> {
   return out!;
 }
 const entry = (who: U, e: EntryInput) => inTx(() => createEntry(c, who, e, key()));
-const upi = (who: U, amount: string) => inTx(() => setMyUpiTotal(c, who, { amount }, key()));
+const upi = (who: U, amount: string) => inTx(() => addMyUpi(c, who, { amount }, key()));
 
 beforeAll(async () => {
   c = await connect("app", "pump_test_staff");
@@ -57,42 +59,72 @@ describe("logins", () => {
 });
 
 describe("UPI totals from employees' phones (one QR)", () => {
-  it("each person's latest total counts; the sum is used while the QR app total is not typed", async () => {
+  it("each amount entered adds up; a wrong one is cancelled; the net per person goes to the register", async () => {
     await upi(ramesh, "2,000");
-    const r = await upi(ramesh, "3500"); // full total so far, replaces 2,000
-    expect(r.amount).toBe("3500.00");
-    expect(r.history.map((h) => h.amount)).toEqual(["3500.00", "2000.00"]);
+    const wrong = await upi(ramesh, "5000"); // meant 500
+    expect(wrong.totals.UPI).toBe("7000.00");
+    const fixed = await inTx(() => cancelMyUpi(c, ramesh, wrong.payments[0].id, key()));
+    expect(fixed.totals.UPI).toBe("2000.00");
+    await upi(ramesh, "500");
+    const r = await upi(ramesh, "1000");
+    expect(r.totals.UPI).toBe("3500.00");
+    expect(r.payments.map((p) => [p.amount, p.cancelled])).toEqual([
+      ["1000.00", false],
+      ["500.00", false],
+      ["5000.00", true],
+      ["2000.00", false],
+    ]);
+    await expect(inTx(() => cancelMyUpi(c, ramesh, wrong.payments[0].id, key()))).rejects.toThrow(/already cancelled/);
+    await expect(inTx(() => cancelMyUpi(c, suresh, r.payments[0].id, key()))).rejects.toThrow(/not allowed/);
     await upi(suresh, "1200.50");
     const b = await inTx(() => getDayBalance(c, today));
-    expect(b.staffUpi.map((s) => [s.name, s.amount])).toEqual([
-      ["Ramesh", "3500.00"],
-      ["Suresh", "1200.50"],
+    expect(b.staffUpi.map((s) => [s.mode, s.name, s.amount, s.payments])).toEqual([
+      ["UPI", "Ramesh", "3500.00", 3],
+      ["UPI", "Suresh", "1200.50", 1],
     ]);
     expect(b.collections.find((x) => x.mode === "UPI")).toMatchObject({ total: "4700.50", source: "staff" });
-    expect(b.upiCheck).toEqual({ staff: "4700.50", paytm: null, difference: null });
+    expect(b.staffChecks).toEqual([{ mode: "UPI", label: "UPI", staff: "4700.50", machine: null, difference: null }]);
+    // no nozzle closing yet: sales unknown, so no "UPI is more than sales" alarm (owner saw −300 cash)
+    expect(b.sales.complete).toBe(false);
+    expect(b.problems.some((p) => p.includes("more than the fuel sales"))).toBe(false);
   });
 
   it("the QR app total typed at End day wins, and the difference is shown", async () => {
     await inTx(() => declareCollections(c, owner, { date: today, amounts: { UPI: "5000" } }, key()));
     const b = await inTx(() => getDayBalance(c, today));
     expect(b.collections.find((x) => x.mode === "UPI")).toMatchObject({ total: "5000.00", source: "machine" });
-    expect(b.upiCheck).toEqual({ staff: "4700.50", paytm: "5000.00", difference: "299.50" });
+    expect(b.staffChecks).toEqual([{ mode: "UPI", label: "UPI", staff: "4700.50", machine: "5000.00", difference: "299.50" }]);
+  });
+
+  it("card payments are kept apart from UPI: own total, own check against the card machine", async () => {
+    const r = await inTx(() => addMyUpi(c, suresh, { amount: "2500", mode: "CARD" }, key()));
+    expect(r.totals).toEqual({ UPI: "1200.50", CARD: "2500.00" });
+    await inTx(() => addMyUpi(c, ramesh, { amount: "1000", mode: "CARD" }, key()));
+    let b = await inTx(() => getDayBalance(c, today));
+    expect(b.collections.find((x) => x.mode === "CARD")).toMatchObject({ total: "3500.00", source: "staff" });
+    expect(b.collections.find((x) => x.mode === "UPI")).toMatchObject({ total: "5000.00", source: "machine" }); // unchanged
+    expect(b.staffChecks.find((x) => x.mode === "CARD")).toEqual({ mode: "CARD", label: "Card", staff: "3500.00", machine: null, difference: null });
+    await inTx(() => declareCollections(c, owner, { date: today, amounts: { CARD: "3500" } }, key()));
+    b = await inTx(() => getDayBalance(c, today));
+    expect(b.staffChecks.find((x) => x.mode === "CARD")).toMatchObject({ machine: "3500.00", difference: "0.00" });
   });
 
   it("refuses nonsense, other days, and a lost-response retry saves once", async () => {
     await expect(upi(ramesh, "abc")).rejects.toThrow(/number/);
-    await expect(inTx(() => setMyUpiTotal(c, ramesh, { amount: "10", businessDate: "2020-01-01" }, key()))).rejects.toThrow(/only be given for today/);
+    await expect(upi(ramesh, "0")).rejects.toThrow(/number|Amount/);
+    await expect(inTx(() => addMyUpi(c, ramesh, { amount: "10", businessDate: "2020-01-01" }, key()))).rejects.toThrow(/only be entered for today/);
     const kk = key();
     const body = { amount: "4000" };
-    const run = () => inTx(() => runIdempotent(c, { key: kk, userId: ramesh.id, endpoint: "my-upi", body }, () => setMyUpiTotal(c, ramesh, body, kk)));
+    const run = () => inTx(() => runIdempotent(c, { key: kk, userId: ramesh.id, endpoint: "my-upi", body }, () => addMyUpi(c, ramesh, body, kk)));
     await run();
     expect((await run()).replayed).toBe(true);
-    expect((await c.query("SELECT count(*)::int n FROM staff_upi_totals WHERE amount = 4000")).rows[0].n).toBe(1);
+    expect((await c.query("SELECT count(*)::int n FROM staff_upi_payments WHERE amount = 4000")).rows[0].n).toBe(1);
   });
 
   it("past totals cannot be changed or deleted by the app", async () => {
-    await expect(c.query("UPDATE staff_upi_totals SET amount = 1")).rejects.toThrow();
-    await expect(c.query("DELETE FROM staff_upi_totals")).rejects.toThrow();
+    await expect(c.query("UPDATE staff_upi_payments SET amount = 1")).rejects.toThrow();
+    await expect(c.query("DELETE FROM staff_upi_payments")).rejects.toThrow();
+    await expect(c.query("DELETE FROM staff_upi_payment_cancels")).rejects.toThrow();
   });
 });
 
@@ -113,5 +145,93 @@ describe("double entry protection", () => {
     await entry(ramesh, { kind: "LUBE_SALE", amount: "350", mode: "CASH" });
     await expect(entry(ramesh, { kind: "LUBE_SALE", amount: "350", mode: "UPI" })).rejects.toThrow(/repeat/);
     await entry(ramesh, { kind: "OTHER_INCOME", amount: "350", mode: "CASH" });
+  });
+});
+
+describe("testing fuel", () => {
+  it("records a test (not a sale), refuses bad input, and only the person or the owner can cancel it", async () => {
+    const nozzle = (await c.query("SELECT id FROM nozzles WHERE label = 'MS A1'")).rows[0].id;
+    const t = await inTx(() => recordTest(c, ramesh, { nozzleId: nozzle, litres: "5", returned: true }, key()));
+    expect(t).toMatchObject({ label: "MS A1", litres: "5.000" });
+    await expect(inTx(() => recordTest(c, ramesh, { nozzleId: nozzle, litres: "60", returned: true }, key()))).rejects.toThrow(/between 0 and 50/);
+    await expect(inTx(() => recordTest(c, ramesh, { nozzleId: nozzle, litres: "2", returned: false }, key()))).rejects.toThrow(/write why/);
+    await inTx(() => recordTest(c, ramesh, { nozzleId: nozzle, litres: "2", returned: false, reason: "kept as sample" }, key()));
+    let open = await inTx(() => openTests(c));
+    expect(open.map((x) => [x.litres, x.returned, x.voided])).toEqual([
+      ["2.000", false, false],
+      ["5.000", true, false],
+    ]);
+    await expect(inTx(() => voidTest(c, suresh, { testId: t.testId, reason: "not mine" }))).rejects.toThrow(/not allowed/);
+    await expect(inTx(() => voidTest(c, ramesh, { testId: t.testId, reason: "no" }))).rejects.toThrow(/at least 5/);
+    await inTx(() => voidTest(c, owner, { testId: t.testId, reason: "typed twice" }));
+    open = await inTx(() => openTests(c));
+    expect(open.find((x) => x.id === t.testId)?.voided).toBe(true);
+    await expect(inTx(() => voidTest(c, owner, { testId: t.testId, reason: "typed twice" }))).rejects.toThrow(/already cancelled/);
+  });
+});
+
+describe("WhatsApp day message", () => {
+  it("reads like the register: sales, modes, udhari, cash and what does not match", () => {
+    const msg = dayMessage("Demo Pump", {
+      date: "2026-11-11",
+      sales: { byFuel: { DIESEL: { litres: "100.000", value: "9511.00" } }, total: "9511.00", complete: true },
+      udhariGiven: "1000.00",
+      udhariReceived: "500.00",
+      otherIn: "0.00",
+      paymentsAll: "200.00",
+      collections: [{ label: "UPI", total: "2000.00" }, { label: "Card", total: null }],
+      expectedCash: "6811.00",
+      counted: "6800.00",
+      difference: "-11.00",
+      staffChecks: [{ label: "UPI", staff: "1900.00", machine: "2000.00", difference: "100.00" }],
+    });
+    expect(msg).toContain("*Fuel sales: ₹9,511.00*");
+    expect(msg).toContain("UPI: ₹2,000.00");
+    expect(msg).not.toContain("Card:");
+    expect(msg).toContain("Cash SHORT ₹11.00");
+    expect(msg).toContain("UPI: machine ₹2,000.00, staff entered ₹1,900.00");
+  });
+});
+
+describe("each worker's own Paytm QR", () => {
+  it("each QR's Paytm total is checked against what that worker typed; their sum is the day's UPI", async () => {
+    await inTx(() => setOwnQr(c, ramesh.id, true));
+    await inTx(() => setOwnQr(c, suresh.id, true));
+    const before = await inTx(() => getDayBalance(c, today));
+    const typed = (u: U) => before.qr.checks.find((x) => x.userId === u.id)!.typed!;
+    const R = typed(ramesh);
+    const S = typed(suresh);
+    expect(before.qr.workers.map((w) => w.name)).toEqual(["Ramesh", "Suresh"]);
+
+    const plus = (a: string, b: string) => (Math.round(Number(a) * 100 + Number(b) * 100) / 100).toFixed(2);
+    // a UPI total typed directly is ignored once workers have their own QRs
+    await inTx(() => declareCollections(c, owner, { date: today, amounts: { UPI: "99999" }, qr: { [ramesh.id]: plus(R, "500"), [suresh.id]: S, SHOP: "1000" } }, key()));
+    let b = await inTx(() => getDayBalance(c, today));
+    const row = (id: string | null) => b.qr.checks.find((x) => x.userId === id)!;
+    expect(row(ramesh.id)).toMatchObject({ qr: plus(R, "500"), difference: "500.00" });
+    expect(row(suresh.id)).toMatchObject({ qr: S, difference: "0.00" });
+    expect(row(null)).toMatchObject({ name: "Shop QR", qr: "1000.00", typed: null, difference: null });
+    expect(b.collections.find((x) => x.mode === "UPI")!.total).toBe(plus(plus(plus(R, "500"), S), "1000"));
+    expect(dayMessage("P", b)).toContain(`Ramesh QR: Paytm`);
+    expect(dayMessage("P", b)).not.toContain("Suresh QR");
+
+    // a corrected QR figure replaces the old one, and the UPI total follows
+    await inTx(() => declareCollections(c, owner, { date: today, amounts: {}, qr: { [ramesh.id]: R } }, key()));
+    b = await inTx(() => getDayBalance(c, today));
+    expect(row(ramesh.id).difference).toBe("0.00");
+    expect(b.collections.find((x) => x.mode === "UPI")!.total).toBe(plus(plus(R, S), "1000"));
+
+    // only workers with their own QR (or the shop QR)
+    await expect(inTx(() => declareCollections(c, owner, { date: today, amounts: {}, qr: { [owner.id]: "50" } }, key()))).rejects.toThrow(/no QR/);
+  });
+
+  it("typing each UPI payment can be switched off: phones then take card only", async () => {
+    await inTx(() => setTypeEachUpi(c, false));
+    await expect(upi(ramesh, "100")).rejects.toThrow(/not typed on the phone/);
+    const card = await inTx(() => addMyUpi(c, ramesh, { amount: "700", mode: "CARD" }, key()));
+    expect(card.mode).toBe("CARD");
+    expect((await inTx(() => getDayBalance(c, today))).qr.typeEach).toBe(false);
+    await inTx(() => setTypeEachUpi(c, true));
+    expect((await upi(ramesh, "100")).mode).toBe("UPI");
   });
 });

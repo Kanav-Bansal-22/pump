@@ -122,7 +122,7 @@
   - run row counts, the trial balance, chain verification and manifest comparison
   - log the result; drop the scratch DB
   - **a backup is not trusted until a restore test passes**
-- **Real restore & laptop migration:** `RESTORE.md` and `MIGRATE.md` with exact commands, rehearsed in Phase 6 on a second machine or a clean VM.
+- **Real restore & laptop migration:** `docs/MOVE_TO_NEW_LAPTOP.md` and `npm run db:restore` (checks the file against the manifest, refuses to overwrite data, verifies the meter chains). Tested on a fresh PostgreSQL with the real practice data, 14 Nov 2026.
 - **Optional offsite:** an encrypted copy of the nightly backup to the owner's personal cloud storage. Free tiers only, **not required**, off by default.
 
 ## 6. Operational security checklist (owner)

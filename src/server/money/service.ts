@@ -19,48 +19,111 @@ export function collectionModeOf(paymentMode: string): string | null {
   )[paymentMode] ?? null;
 }
 
+export type StaffPayMode = "UPI" | "CARD";
+
+/** Setting: do workers type each UPI payment on their phone? (on by default) */
+export async function typeEachUpi(c: ClientBase): Promise<boolean> {
+  return (await c.query("SELECT value FROM settings WHERE key = 'staff_type_each_upi'")).rows[0]?.value !== false;
+}
+
+/** Workers who have their own Paytm QR (ticked in Staff logins). */
+export async function qrWorkers(c: ClientBase): Promise<Array<{ userId: string; name: string }>> {
+  return (await c.query(`SELECT id AS "userId", name FROM users WHERE own_qr AND active ORDER BY name`)).rows;
+}
+export type UpiPayment = { id: string; mode: StaffPayMode; amount: string; at: string; cancelled: boolean };
+
+/** One employee's UPI / card payments for a day (newest first) and net totals per mode (cancelled ones left out). */
+export async function myUpiPayments(c: ClientBase, site: string, date: string, userId: string) {
+  const r = await c.query(
+    `SELECT p.id, p.mode, p.amount::text, p.at, (x.payment_id IS NOT NULL) AS cancelled
+       FROM staff_upi_payments p LEFT JOIN staff_upi_payment_cancels x ON x.payment_id = p.id
+      WHERE p.site_id = $1 AND p.business_date = $2 AND p.user_id = $3 ORDER BY p.at DESC`,
+    [site, date, userId],
+  );
+  const payments: UpiPayment[] = r.rows.map((x) => ({ id: x.id, mode: x.mode, amount: x.amount, at: new Date(x.at).toISOString(), cancelled: x.cancelled }));
+  const net = (mode: StaffPayMode) =>
+    payments.filter((p) => !p.cancelled && p.mode === mode).reduce((t, p) => t.plus(p.amount), new D(0)).toFixed(2);
+  return { businessDate: date, totals: { UPI: net("UPI"), CARD: net("CARD") }, payments };
+}
+
 /**
- * An employee's UPI collected today, as a running total ("so far"): a new figure replaces the last one,
- * so a retry or a double tap can never count twice.
+ * An employee records one amount received on the QR (UPI) or the card machine. The register shows the net
+ * total per employee and mode.
+ * A double tap / retry after a Wi-Fi drop carries the same key, so it is counted once.
  */
-export async function setMyUpiTotal(
+export async function addMyUpi(
   c: ClientBase,
   user: { id: string; permissions: string[] },
-  input: { amount: string; businessDate?: string | null },
+  input: { amount: string; mode?: StaffPayMode | null; businessDate?: string | null },
   idempotencyKey: string,
 ) {
   if (!user.permissions.includes("receipt.create")) throw Errors.forbidden();
+  const mode = input.mode ?? "UPI";
+  if (mode !== "UPI" && mode !== "CARD") throw Errors.badInput("Choose UPI or Card.");
+  if (mode === "UPI" && !(await typeEachUpi(c)))
+    throw new AppError("UPI_TYPING_OFF", 409, "UPI payments are not typed on the phone any more (the owner reads each QR's total from Paytm).", "UPI अब फ़ोन पर नहीं लिखना है।");
   const site = await siteId(c);
   const dates = await entryDates(c);
   const date = input.businessDate ?? dates.today;
-  if (date !== dates.today && date !== dates.yesterday) throw Errors.badInput("UPI totals can only be given for today.");
+  if (date !== dates.today && date !== dates.yesterday) throw Errors.badInput("UPI / card can only be entered for today.");
   let amount: string;
   try {
-    amount = /^0+(\.0+)?$/.test(String(input.amount).trim()) ? "0.00" : parseAmount(input.amount);
+    amount = parseAmount(input.amount);
   } catch {
-    throw Errors.badInput("UPI total must be a number like 12500.");
+    throw Errors.badInput("Amount must be a number like 500.");
   }
-  await c.query("INSERT INTO staff_upi_totals (site_id, business_date, user_id, amount, idempotency_key) VALUES ($1,$2,$3,$4,$5)", [
+  await c.query("INSERT INTO staff_upi_payments (site_id, business_date, user_id, mode, amount, idempotency_key) VALUES ($1,$2,$3,$4,$5,$6)", [
     site,
     date,
     user.id,
+    mode,
     amount,
     idempotencyKey,
   ]);
   await c.query("SELECT pg_notify('pump_events', $1)", [JSON.stringify({ type: "upi", date })]);
-  const mine = await c.query("SELECT amount::text, at FROM staff_upi_totals WHERE site_id = $1 AND business_date = $2 AND user_id = $3 ORDER BY at DESC", [
-    site,
-    date,
-    user.id,
-  ]);
-  return { businessDate: date, amount, history: mine.rows.map((r) => ({ amount: r.amount as string, at: new Date(r.at).toISOString() })) };
+  return { amount, mode, ...(await myUpiPayments(c, site, date, user.id)) };
 }
 
-/** Save the day's machine totals (only the modes typed in). A changed total is a new row; the latest counts. */
+/** Cancel a wrongly typed UPI amount (own entries; the owner may cancel anyone's). Kept on record as cancelled. */
+export async function cancelMyUpi(c: ClientBase, user: { id: string; role: string; permissions: string[] }, paymentId: string, idempotencyKey: string) {
+  if (!user.permissions.includes("receipt.create")) throw Errors.forbidden();
+  const r = await c.query(
+    `SELECT p.site_id, p.business_date::text AS date, p.user_id, p.mode, p.amount::text, (x.payment_id IS NOT NULL) AS cancelled
+       FROM staff_upi_payments p LEFT JOIN staff_upi_payment_cancels x ON x.payment_id = p.id WHERE p.id = $1`,
+    [paymentId],
+  );
+  const p = r.rows[0];
+  if (!p) throw Errors.badInput("That UPI / card entry was not found.");
+  if (p.user_id !== user.id && user.role !== "OWNER") throw Errors.forbidden();
+  if (p.cancelled) throw new AppError("ALREADY_CANCELLED", 409, "That entry is already cancelled.", "यह एंट्री पहले ही रद्द है।");
+  await c.query("INSERT INTO staff_upi_payment_cancels (payment_id, site_id, business_date, cancelled_by, idempotency_key) VALUES ($1,$2,$3,$4,$5)", [
+    paymentId,
+    p.site_id,
+    p.date,
+    user.id,
+    idempotencyKey,
+  ]);
+  await c.query("SELECT pg_notify('pump_events', $1)", [JSON.stringify({ type: "upi", date: p.date })]);
+  return { cancelled: p.amount as string, mode: p.mode as StaffPayMode, ...(await myUpiPayments(c, p.site_id, p.date, p.user_id)) };
+}
+
+const typedAmount = (label: string, raw: string) => {
+  try {
+    return /^0+(\.0+)?$/.test(String(raw).trim()) ? "0.00" : parseAmount(String(raw));
+  } catch {
+    throw Errors.badInput(`${label}: amount must be a number like 45000.`);
+  }
+};
+
+/**
+ * Save the day's machine totals (only the modes typed in). A changed total is a new row; the latest counts.
+ * With workers' own QRs, `qr` holds each QR's Paytm total (key: worker's user id, or "SHOP" for the shop's
+ * own QR) and the day's UPI total is their sum; a UPI total typed directly is then ignored.
+ */
 export async function declareCollections(
   c: ClientBase,
   user: { id: string; permissions: string[] },
-  input: { date: string; amounts: Record<string, string> },
+  input: { date: string; amounts: Record<string, string>; qr?: Record<string, string> | null },
   idempotencyKey: string,
 ) {
   if (!user.permissions.includes("cash.count")) throw Errors.forbidden();
@@ -74,15 +137,52 @@ export async function declareCollections(
     ]),
   );
   let saved = 0;
+  const workers = await qrWorkers(c);
+  const qrNow = Object.fromEntries(
+    (await c.query("SELECT user_id, amount::text FROM v_day_qr_totals WHERE site_id = $1 AND business_date = $2", [site, input.date])).rows.map((r) => [
+      r.user_id ?? "SHOP",
+      r.amount,
+    ]),
+  ) as Record<string, string>;
+  const byQr = workers.length > 0 || Object.keys(qrNow).length > 0;
+  for (const [k, raw] of Object.entries(input.qr ?? {})) {
+    if (raw == null || String(raw).trim() === "") continue;
+    const w = workers.find((x) => x.userId === k);
+    if (k !== "SHOP" && !w && qrNow[k] == null) throw Errors.badInput("That worker has no QR. Tick 'Own Paytm QR' in Staff logins first.");
+    const amount = typedAmount(`${w?.name ?? "Shop"} QR`, raw);
+    if (qrNow[k] === amount) continue;
+    await c.query("INSERT INTO day_qr_totals (site_id, business_date, user_id, amount, entered_by, idempotency_key) VALUES ($1,$2,$3,$4,$5,$6)", [
+      site,
+      input.date,
+      k === "SHOP" ? null : k,
+      amount,
+      user.id,
+      `${idempotencyKey}:qr:${k}`,
+    ]);
+    saved++;
+  }
+  if (byQr) {
+    // the day's UPI total is the sum of the QR totals
+    const q = (
+      await c.query("SELECT count(*)::int AS n, COALESCE(SUM(amount), 0)::numeric(14,2)::text AS s FROM v_day_qr_totals WHERE site_id = $1 AND business_date = $2", [
+        site,
+        input.date,
+      ])
+    ).rows[0];
+    if (q.n > 0 && current.UPI !== q.s)
+      await c.query("INSERT INTO day_collections (site_id, business_date, mode, amount, entered_by, idempotency_key) VALUES ($1,$2,'UPI',$3,$4,$5)", [
+        site,
+        input.date,
+        q.s,
+        user.id,
+        `${idempotencyKey}:UPI`,
+      ]);
+  }
   for (const m of COLLECTION_MODES) {
+    if (byQr && m.mode === "UPI") continue;
     const raw = input.amounts[m.mode];
     if (raw == null || String(raw).trim() === "") continue;
-    let amount: string;
-    try {
-      amount = /^0+(\.0+)?$/.test(String(raw).trim()) ? "0.00" : parseAmount(String(raw));
-    } catch {
-      throw Errors.badInput(`${m.label}: amount must be a number like 45000.`);
-    }
+    const amount = typedAmount(m.label, raw);
     if (current[m.mode] === amount) continue;
     await c.query("INSERT INTO day_collections (site_id, business_date, mode, amount, entered_by, idempotency_key) VALUES ($1,$2,$3,$4,$5,$6)", [
       site,
@@ -520,21 +620,51 @@ export async function getDayBalance(c: ClientBase, date: string) {
   ) as Record<string, string>;
   // UPI reported by each employee (running totals; latest counts). One shared QR, so these are checked
   // against the Paytm app's day total. Without a Paytm total, the employees' sum is used.
+  // UPI / card amounts entered by employees on their phones (net per person and mode)
   const staffUpi = (
-    await c.query("SELECT user_id, name, amount::text, at FROM v_staff_upi_totals WHERE site_id = $1 AND business_date = $2 ORDER BY name", [site, date])
-  ).rows as Array<{ user_id: string; name: string; amount: string; at: Date }>;
-  const staffUpiTotal = staffUpi.reduce((a, r) => a.plus(r.amount), new D(0));
-  const upiCheck = staffUpi.length
-    ? {
-        staff: staffUpiTotal.toFixed(2),
-        paytm: declared.UPI ?? null,
-        difference: declared.UPI != null ? new D(declared.UPI).minus(staffUpiTotal).toFixed(2) : null,
-      }
-    : null;
+    await c.query(
+      "SELECT mode, user_id, name, amount::text, payments, at FROM v_staff_upi_totals WHERE site_id = $1 AND business_date = $2 ORDER BY mode DESC, name",
+      [site, date],
+    )
+  ).rows as Array<{ mode: "UPI" | "CARD"; user_id: string; name: string; amount: string; payments: number; at: Date }>;
+  const staffSum = (mode: string) => staffUpi.filter((r) => r.mode === mode).reduce((a, r) => a.plus(r.amount), new D(0));
+  // checked against the QR app / card machine total typed at End day
+  const staffChecks = (["UPI", "CARD"] as const)
+    .filter((mode) => staffUpi.some((r) => r.mode === mode))
+    .map((mode) => ({
+      mode,
+      label: mode === "UPI" ? "UPI" : "Card",
+      staff: staffSum(mode).toFixed(2),
+      machine: declared[mode] ?? null,
+      difference: declared[mode] != null ? new D(declared[mode]).minus(staffSum(mode)).toFixed(2) : null,
+    }));
+  // workers' own QRs: each QR's Paytm total against the UPI payments that worker typed
+  const typeEach = await typeEachUpi(c);
+  const workers = await qrWorkers(c);
+  const qrRows = (
+    await c.query("SELECT user_id, name, amount::text FROM v_day_qr_totals WHERE site_id = $1 AND business_date = $2 ORDER BY name", [site, date])
+  ).rows as Array<{ user_id: string | null; name: string; amount: string }>;
+  const typedUpi = staffUpi.filter((r) => r.mode === "UPI");
+  const qrIds: Array<string | null> = workers.map((w) => w.userId);
+  for (const r of qrRows) if (!qrIds.includes(r.user_id)) qrIds.push(r.user_id);
+  if (qrIds.length) for (const r of typedUpi) if (!qrIds.includes(r.user_id)) qrIds.push(r.user_id);
+  const qrChecks = qrIds.map((id) => {
+    const isWorker = workers.some((w) => w.userId === id);
+    const typed = typedUpi.find((r) => r.user_id === id)?.amount ?? (isWorker && typeEach ? "0.00" : null);
+    const qr = qrRows.find((r) => r.user_id === id)?.amount ?? null;
+    return {
+      userId: id,
+      name: workers.find((w) => w.userId === id)?.name ?? qrRows.find((r) => r.user_id === id)?.name ?? typedUpi.find((r) => r.user_id === id)?.name ?? "Shop QR",
+      ownQr: id == null || isWorker || qrRows.some((r) => r.user_id === id),
+      typed,
+      qr,
+      difference: qr != null && typed != null ? new D(qr).minus(typed).toFixed(2) : null,
+    };
+  });
   const collections = COLLECTION_MODES.map((m) => {
     const already = sum((e) => ENTRY_KINDS[e.kind].dir === "IN" && collectionModeOf(e.mode_code) === m.mode);
-    const fromStaff = m.mode === "UPI" && declared.UPI == null && staffUpi.length > 0;
-    const total = fromStaff ? staffUpiTotal.toFixed(2) : (declared[m.mode] ?? null);
+    const fromStaff = declared[m.mode] == null && staffUpi.some((r) => r.mode === m.mode);
+    const total = fromStaff ? staffSum(m.mode).toFixed(2) : (declared[m.mode] ?? null);
     const sales = total == null ? new D(0) : new D(total).minus(already);
     return {
       mode: m.mode,
@@ -568,7 +698,10 @@ export async function getDayBalance(c: ClientBase, date: string) {
   for (const x of collections)
     if (new D(x.sales).lt(0))
       problems.push(`${x.label} total ₹${x.total} is less than the ${x.label} entries already made (₹${x.alreadyEntered}). Check the ${x.label} total.`);
-  if (cashSales.lt(0)) problems.push("Udhari + UPI/card/bank received is more than the fuel sales. Check those amounts.");
+  // fuel sales are known only once every nozzle's closing (next morning) and the rates are in; before that the
+  // cash figures would be meaningless (e.g. ₹0 sales − ₹300 UPI = −₹300 cash), so they are not shown
+  const salesComplete = seg.rows.length > 0 && !missingReadings.length && !missingRates.length;
+  if (salesComplete && cashSales.lt(0)) problems.push("Udhari + UPI/card/bank received is more than the fuel sales. Check those amounts.");
   if (!count) problems.push("Cash not counted yet");
 
   return {
@@ -583,6 +716,7 @@ export async function getDayBalance(c: ClientBase, date: string) {
       missingReadings,
       missingRates,
       openFlags,
+      complete: salesComplete,
     },
     udhariGiven: udhariGiven.toFixed(2),
     udhariReceived: udhariReceived.toFixed(2),
@@ -594,8 +728,9 @@ export async function getDayBalance(c: ClientBase, date: string) {
     nonCashIn: nonCashIn.toFixed(2),
     paymentsNonCash: paymentsAll.minus(paymentsCash).toFixed(2),
     collections,
-    staffUpi: staffUpi.map((r) => ({ userId: r.user_id, name: r.name, amount: r.amount, at: new Date(r.at).toISOString() })),
-    upiCheck,
+    staffUpi: staffUpi.map((r) => ({ mode: r.mode, userId: r.user_id, name: r.name, amount: r.amount, payments: r.payments, at: new Date(r.at).toISOString() })),
+    staffChecks,
+    qr: { typeEach, workers, checks: qrChecks },
     nonCashSales: nonCashSales.toFixed(2),
     cashSales: cashSales.toFixed(2),
     expectedCash: expectedCash.toFixed(2),
@@ -720,7 +855,8 @@ export async function lockDay(
     udhariReceived: b.udhariReceived,
     collections: b.collections.filter((x) => x.total != null).map((x) => ({ mode: x.mode, total: x.total, source: x.source, sales: x.sales })),
     staffUpi: b.staffUpi,
-    upiCheck: b.upiCheck,
+    staffChecks: b.staffChecks,
+    qrChecks: b.qr.checks,
     nonCashSales: b.nonCashSales,
     otherIn: b.otherIn,
     payments: b.paymentsAll,
@@ -754,7 +890,7 @@ export async function lockDay(
 export async function endDay(
   c: ClientBase,
   user: { id: string; role: string; permissions: string[] },
-  input: { date: string; counted: string; overrideReason?: string | null; collections?: Record<string, string> | null },
+  input: { date: string; counted: string; overrideReason?: string | null; collections?: Record<string, string> | null; qr?: Record<string, string> | null },
   idempotencyKey: string,
 ) {
   if (!user.permissions.includes("cash.count") && user.role !== "OWNER") throw Errors.forbidden();
@@ -773,7 +909,8 @@ export async function endDay(
       "यह दिन कल सुबह 8 बजे की रीडिंग के बाद बंद होगा।",
     );
   if (status === "SUBMITTED") await reopenDay(c, { role: "OWNER" }, input.date); // a recount inside the same End day
-  if (input.collections) await declareCollections(c, user, { date: input.date, amounts: input.collections }, `${idempotencyKey}:col`);
+  if (input.collections || input.qr)
+    await declareCollections(c, user, { date: input.date, amounts: input.collections ?? {}, qr: input.qr }, `${idempotencyKey}:col`);
   const counted = await countCash(c, user, { date: input.date, counted: input.counted }, idempotencyKey);
   const lock = await lockDay(c, user, { date: input.date, overrideReason: input.overrideReason });
   return { ...counted, integrityCode: lock.integrityCode };

@@ -466,3 +466,70 @@ export async function getDaySheet(c: ClientBase, date: string) {
   const total = fuels.reduce((a, f) => a.plus(f.value), new D(0)).toFixed(2);
   return { date, nozzles: rows.rows, fuels, total };
 }
+
+// ---------------------------------------------------------------------------
+// Testing fuel: litres drawn to test a nozzle are not a sale. Returned to the tank or not, they are
+// taken off that nozzle's sales at its next closing (v_meter_segments); not-returned also lowers stock.
+// ---------------------------------------------------------------------------
+
+export type OpenTest = { id: string; nozzleId: string; label: string; station: string; litres: string; returned: boolean; reason: string | null; at: string; by: string; voided: boolean };
+
+/** Tests since each nozzle's latest reading: these will come off the coming closing. */
+export async function openTests(c: ClientBase): Promise<OpenTest[]> {
+  const r = await c.query(
+    `SELECT t.id, t.nozzle_id, n.label, st.name AS station, t.litres::text, t.returned_to_tank, t.not_returned_reason, t.tested_at, u.name AS by,
+            EXISTS (SELECT 1 FROM nozzle_test_voids v WHERE v.test_id = t.id) AS voided
+       FROM nozzle_tests t JOIN nozzles n ON n.id = t.nozzle_id JOIN stations st ON st.id = n.station_id JOIN users u ON u.id = t.entered_by
+      WHERE t.tested_at > COALESCE((SELECT max(p.effective_at) FROM v_meter_points_live p WHERE p.nozzle_id = t.nozzle_id), '-infinity')
+      ORDER BY t.tested_at DESC`,
+  );
+  return r.rows.map((x) => ({
+    id: x.id,
+    nozzleId: x.nozzle_id,
+    label: x.label,
+    station: x.station,
+    litres: x.litres,
+    returned: x.returned_to_tank,
+    reason: x.not_returned_reason,
+    at: new Date(x.tested_at).toISOString(),
+    by: x.by,
+    voided: x.voided,
+  }));
+}
+
+export async function recordTest(
+  c: ClientBase,
+  user: { id: string; permissions: string[] },
+  input: { nozzleId: string; litres: string; returned: boolean; reason?: string | null },
+  idempotencyKey: string,
+) {
+  if (!user.permissions.includes("tests.record")) throw Errors.forbidden();
+  const n = await c.query("SELECT n.label FROM nozzles n JOIN stations st ON st.id = n.station_id WHERE n.id = $1 AND n.active AND st.active", [input.nozzleId]);
+  if (!n.rowCount) throw Errors.badInput("Choose the nozzle.");
+  const raw = String(input.litres ?? "").trim();
+  if (!/^\d{1,2}(\.\d{1,3})?$/.test(raw) || new D(raw).lte(0) || new D(raw).gt(50))
+    throw new AppError("BAD_LITRES", 400, "Testing litres must be between 0 and 50, like 5 or 2.5.", "टेस्टिंग लीटर 0 से 50 के बीच, जैसे 5।");
+  const reason = input.returned ? null : String(input.reason ?? "").trim();
+  if (!input.returned && !reason) throw Errors.badInput("Fuel not put back in the tank: write why (e.g. kept as sample).");
+  const r = await c.query(
+    `INSERT INTO nozzle_tests (nozzle_id, litres, returned_to_tank, not_returned_reason, entered_by, idempotency_key)
+     VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+    [input.nozzleId, raw, input.returned, reason, user.id, idempotencyKey],
+  );
+  await c.query("SELECT pg_notify('pump_events', $1)", [JSON.stringify({ type: "test", nozzleId: input.nozzleId })]);
+  return { testId: r.rows[0].id as string, label: n.rows[0].label as string, litres: new D(raw).toFixed(3) };
+}
+
+/** Cancel a wrongly entered test (the person who entered it, or the owner). Only before the next closing takes it in. */
+export async function voidTest(c: ClientBase, user: { id: string; role: string; permissions: string[] }, input: { testId: string; reason: string }) {
+  if (!user.permissions.includes("tests.record")) throw Errors.forbidden();
+  const reason = String(input.reason ?? "").trim();
+  if (reason.length < 5) throw Errors.badInput("Write why it is cancelled (at least 5 letters).");
+  const t = (await openTests(c)).find((x) => x.id === input.testId);
+  if (!t) throw Errors.badInput("This test is already counted in a closing; ask the owner to correct the reading instead.");
+  if (t.voided) throw new AppError("ALREADY_CANCELLED", 409, "This test is already cancelled.", "पहले ही रद्द है।");
+  const by = (await c.query("SELECT entered_by FROM nozzle_tests WHERE id = $1", [t.id])).rows[0].entered_by;
+  if (by !== user.id && user.role !== "OWNER") throw Errors.forbidden();
+  await c.query("INSERT INTO nozzle_test_voids (test_id, reason, voided_by) VALUES ($1,$2,$3)", [t.id, reason, user.id]);
+  return { cancelled: t.litres };
+}

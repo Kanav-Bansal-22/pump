@@ -174,6 +174,7 @@ describe("a register day: entries -> balance -> count -> lock", () => {
     for (const [label, , close] of DAY.slice(0, 5)) await dayEnd(label, close); // MS A2 still missing
     const b = await inTx(() => getDayBalance(c, today));
     expect(b.sales.missingReadings).toEqual(["Station 3 (Petrol) MS A2"]);
+    expect(b.sales.complete).toBe(false);
     // 5 nozzles: 178,765.90 + 182,278.32 + 389,862.55 + 98,979.07 + 72,673.52
     expect(b.sales.total).toBe("922559.36");
     expect(b.udhariGiven).toBe("151888.00");
@@ -202,6 +203,7 @@ describe("a register day: entries -> balance -> count -> lock", () => {
     const b = await inTx(() => getDayBalance(c, today));
     expect(b.sales.byFuel.PETROL.value).toBe("91351.71"); // register: 868.61 L x 105.17
     expect(b.sales.total).toBe("941237.55");
+    expect(b.sales.complete).toBe(true);
     expect(b.expectedCash).toBe("1041961.55");
     const r = await inTx(() => countCash(c, staff, { date: today, counted: "1041100" }, key()));
     expect(r.difference).toBe("-861.55");

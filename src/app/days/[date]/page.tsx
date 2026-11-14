@@ -7,6 +7,7 @@ import { getDaySheet } from "@/server/meters/service";
 import { ENTRY_KINDS, getDayBalance } from "@/server/money/service";
 import { requireUser } from "@/server/session";
 import { PrintButton } from "../../customers/[id]/print-button";
+import { WhatsAppShare } from "@/components/whatsapp-share";
 
 export const dynamic = "force-dynamic";
 
@@ -20,6 +21,7 @@ export default async function DayPage({ params }: PageProps<"/days/[date]">) {
   try {
     const sheet = await getDaySheet(c, date);
     const b = await getDayBalance(c, date);
+    const pumpName = ((await c.query("SELECT name FROM sites WHERE active LIMIT 1")).rows[0]?.name as string | undefined) ?? "Petrol Pump";
     const snap = (
       await c.query(
         `SELECT s.integrity_code, s.figures->'override' AS override, s.created_at, u.name AS by
@@ -31,7 +33,7 @@ export default async function DayPage({ params }: PageProps<"/days/[date]">) {
     const line = (label: string, v: string | null, bold?: boolean, tone?: string) => (
       <tr className={bold ? "font-semibold" : ""}>
         <td>{label}</td>
-        <td className={`num ${tone ?? ""}`}>{inr(v)}</td>
+        <td className={`num ${tone ?? ""}`}>{v ? inr(v) : ""}</td>
       </tr>
     );
     return (
@@ -46,7 +48,8 @@ export default async function DayPage({ params }: PageProps<"/days/[date]">) {
             </span>
           )}
           {snap?.override && <span className="text-orange-700">⚠ ended with reason: {snap.override.reason}</span>}
-          <span className="ml-auto">
+          <span className="ml-auto flex flex-wrap items-center gap-2">
+            {b.status === "LOCKED" && <WhatsAppShare pump={pumpName} figures={b} />}
             <PrintButton />
           </span>
         </div>
@@ -107,14 +110,13 @@ export default async function DayPage({ params }: PageProps<"/days/[date]">) {
           <Panel title="Day balance">
             <table className="reg">
               <tbody>
-                {line("Fuel sales", b.sales.total, true)}
-                {line("− Udhari given", b.udhariGiven)}
+                {line(b.sales.complete ? "Fuel sales" : "Fuel sales (after nozzle closing)", b.sales.complete ? b.sales.total : "", true)}
                 {b.collections
                   .filter((x) => x.total != null)
                   .map((x) => (
                     <tr key={x.mode}>
                       <td>
-                        − Fuel sold by {x.label}
+                        − Received by {x.label}
                         <div className="text-xs text-muted">
                           {x.label} total {inr(x.total)}
                           {x.alreadyEntered !== "0.00" && <> − udhari / other {inr(x.alreadyEntered)}</>}
@@ -123,11 +125,12 @@ export default async function DayPage({ params }: PageProps<"/days/[date]">) {
                       <td className="num">{inr(x.sales)}</td>
                     </tr>
                   ))}
-                {line("Cash sales", b.cashSales, true)}
+                {line("− Udhari given", b.udhariGiven)}
+                {line("Fuel sales received in cash", b.sales.complete ? b.cashSales : "", true)}
                 {line("+ Udhari received (cash)", b.udhariReceivedCash)}
                 {line("+ Lube / other received (cash)", b.otherInCash)}
                 {line("− Expenses paid in cash", b.paymentsCash)}
-                {showCash && line("Cash that should be in hand", b.expectedCash, true)}
+                {showCash && b.sales.complete && line("Cash that should be in hand", b.expectedCash, true)}
                 {b.counted != null && line("Cash counted", b.counted, true)}
                 {showCash &&
                   b.difference != null &&

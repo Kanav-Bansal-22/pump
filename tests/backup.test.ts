@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, inject, it } from "vitest";
@@ -8,6 +8,7 @@ import { createHash } from "node:crypto";
 import { createUser } from "@/server/auth/service";
 import { createStandardLayout } from "@/server/config/service";
 import { takeBackup } from "@/server/ops/backup";
+import { restoreBackup } from "../scripts/lib/restore";
 import { connect, tx } from "./helpers/db";
 
 const PG_BIN = process.env.PG_BIN ?? "C:\\Program Files\\PostgreSQL\\16\\bin";
@@ -112,5 +113,45 @@ describe("backup and restore (TC-31)", () => {
     const log = await c.query("SELECT ok, error FROM backup_log WHERE id = $1", [r.backupId]);
     expect(log.rows[0].ok).toBe(false);
     expect(log.rows[0].error).toMatch(/pg_dump failed/);
+  });
+});
+
+describe("moving to another laptop (npm run db:restore)", () => {
+  it("restores a backup into a new database, checks it against the manifest, and verifies the readings", async () => {
+    const db = inject("db");
+    const conn = { host: db.host, port: String(db.port), backupPassword: db.pump_backup, appPassword: db.pump_app };
+    const b = await takeBackup("NIGHTLY", "pump_test_backup", conn);
+    expect(b.ok).toBe(true);
+    const opts = { file: b.file!, target: "pump_moved", host: db.host, port: db.port, superPassword: db.superPassword, migratorPassword: db.pump_migrator, log: () => {} };
+    const r = await restoreBackup(opts);
+    expect(r.manifest).toBe("MATCH");
+    expect(r.chainProblems).toBe(0);
+    expect(r.headsMatch).toBe(true);
+    expect(r.migrationsApplied).toEqual([]); // same app version
+    expect(r.counts["meter readings"]).toBe("6");
+    expect(r.counts.logins).toBe("1");
+
+    // the app role can work in the moved database (grants and settings came back)
+    const app = await connect("app", "pump_moved");
+    try {
+      expect((await app.query("SELECT name FROM sites")).rows[0].name).toBe("Backup Test Pump");
+      expect((await app.query("SHOW timezone")).rows[0].TimeZone).toBe("Asia/Kolkata");
+      await expect(app.query("DELETE FROM meter_points")).rejects.toThrow();
+    } finally {
+      await app.end();
+    }
+
+    // never overwrites a database that has data
+    await expect(restoreBackup(opts)).rejects.toThrow(/already has data/);
+  });
+
+  it("refuses a backup file that was changed after it was written", async () => {
+    const db = inject("db");
+    const conn = { host: db.host, port: String(db.port), backupPassword: db.pump_backup, appPassword: db.pump_app };
+    const b = await takeBackup("MANUAL", "pump_test_backup", conn);
+    appendFileSync(b.file!, "x");
+    await expect(
+      restoreBackup({ file: b.file!, target: "pump_tampered", host: db.host, port: db.port, superPassword: db.superPassword, migratorPassword: db.pump_migrator, log: () => {} }),
+    ).rejects.toThrow(/changed or damaged/);
   });
 });

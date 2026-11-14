@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { createUser, resetPassword, revokeAllSessions, setHomeView, setUserActive } from "@/server/auth/service";
+import { setOwnQr, setTypeEachUpi } from "@/server/config/service";
 import { apiPost } from "@/server/http";
 
 const Input = z.discriminatedUnion("action", [
@@ -14,6 +15,8 @@ const Input = z.discriminatedUnion("action", [
   z.object({ action: z.literal("setActive"), userId: z.uuid(), active: z.boolean() }),
   z.object({ action: z.literal("logoutEverywhere"), userId: z.uuid() }),
   z.object({ action: z.literal("setHomeView"), userId: z.uuid(), view: z.enum(["register", "simple"]) }),
+  z.object({ action: z.literal("setOwnQr"), userId: z.uuid(), on: z.boolean() }),
+  z.object({ action: z.literal("setTypeEachUpi"), on: z.boolean() }),
 ]);
 
 /** Owner manages logins: create, reset password, deactivate, sign out of all phones (lost phone). */
@@ -31,6 +34,12 @@ export const POST = apiPost({ endpoint: "users", permission: "users.manage", inp
       return { revoked: await revokeAllSessions(c, input.userId) };
     case "setHomeView":
       await setHomeView(c, input.userId, input.view);
+      return {};
+    case "setOwnQr":
+      await setOwnQr(c, input.userId, input.on);
+      return {};
+    case "setTypeEachUpi":
+      await setTypeEachUpi(c, input.on);
       return {};
   }
 });

@@ -88,10 +88,25 @@ export async function updateNozzle(c: ClientBase, id: string, input: { label: st
 
 export async function listUsers(c: ClientBase) {
   const r = await c.query(
-    `SELECT u.id, u.name, u.username, u.role_code AS role, u.active, u.must_change_password AS "mustChange", u.home_view AS "homeView",
+    `SELECT u.id, u.name, u.username, u.role_code AS role, u.active, u.must_change_password AS "mustChange", u.home_view AS "homeView", u.own_qr AS "ownQr",
             (u.locked_until > now()) AS locked,
             (SELECT max(created_at) FROM sessions s WHERE s.user_id = u.id) AS "lastLogin"
        FROM users u ORDER BY u.active DESC, u.role_code, u.name`,
   );
-  return r.rows as Array<{ id: string; name: string; username: string; role: string; active: boolean; mustChange: boolean; homeView: "register" | "simple"; locked: boolean; lastLogin: Date | null }>;
+  return r.rows as Array<{ id: string; name: string; username: string; role: string; active: boolean; mustChange: boolean; homeView: "register" | "simple"; ownQr: boolean; locked: boolean; lastLogin: Date | null }>;
+}
+
+/** Owner: this worker has their own Paytm QR (their QR total is typed at End day and checked against their entries). */
+export async function setOwnQr(c: ClientBase, userId: string, on: boolean): Promise<void> {
+  const r = await c.query("UPDATE users SET own_qr = $2 WHERE id = $1", [userId, on]);
+  if (!r.rowCount) throw Errors.badInput("Login not found.");
+}
+
+/** Owner: do workers type each UPI payment on their phone? */
+export async function setTypeEachUpi(c: ClientBase, on: boolean): Promise<void> {
+  await c.query(
+    `INSERT INTO settings (key, value, description) VALUES ('staff_type_each_upi', $1::jsonb, 'Workers type each UPI payment on their phone')
+     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+    [JSON.stringify(on)],
+  );
 }

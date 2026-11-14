@@ -65,10 +65,15 @@ Phases follow the master prompt (Part 18). A phase is **complete only when its e
   - 106 tests passing
 - [x] **Employee phones + double-entry protection (2026-11-12)**
   - Migration 0013: each login opens either the **phone view** (`/staff`: Udhari given/received, new customer, *My UPI today*, my entries) or the full register (counter laptop). New staff logins default to the phone view; owner changes it on *Staff logins*
-  - *My UPI today*: the employee types the **net total received so far** on the one QR (not each payment); a new total replaces the old one, history kept (append-only `staff_upi_totals`)
-  - Register Day summary: *UPI by employee* (name, time, amount, total) checked against the QR app total typed at End day (matches / app shows more / staff reported more). If no app total is typed, the staff sum is used for the UPI line
+  - *UPI received* (migration 0014, owner's change): the employee enters **each amount** received on the one QR; the register shows the **net total per employee**. A wrong amount is cancelled with "wrong" (kept on record, crossed out); the owner can cancel anyone's. Append-only `staff_upi_payments` + `staff_upi_payment_cancels` (0013's running-total table is no longer used)
+  - Card too (migration 0015): the employee picks UPI or Card for each amount; card has its own net total per employee and its own check against the card machine total
+  - Register Day summary: *UPI / Card received by employee (net)* (name, number of payments, last time, net amount, total) checked against the QR app total typed at End day (matches / app shows more / staff reported more). If no app total is typed, the staff sum is used for the UPI line
   - Double entry: same customer + same kind + same amount within 10 min (setting `repeat_entry_minutes`) → "looks like a repeat … Save anyway"; lost-reply retries reuse the same key and never save twice (checked in the browser with a dropped reply)
-  - 113 tests passing
+  - Cash figures hidden until every nozzle closing + rate is in (owner saw −₹300 cash from ₹0 sales − ₹300 UPI)
+  - **Testing fuel** on the register: nozzle, litres, put back or not (+ reason); cancel with reason by the enterer or owner until the next closing; closing preview deducts test litres
+  - **WhatsApp day summary**: after End day (and on each ended day in Daily records), opens WhatsApp with the day's figures; owner sends it; Copy text
+  - Statements: asks Daily / Monthly / Date to date first, then only that question
+  - 116 tests passing
   - [ ] Backup script + phone download + health card
 - [ ] Phase 3 — Meter and fuel management
 - [ ] Phase 4 — Accounting

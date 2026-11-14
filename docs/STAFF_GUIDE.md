@@ -3,13 +3,16 @@
 फ़ोन पर पंप का Wi-Fi चालू करें → होम स्क्रीन पर **Petrol Pump** खोलें → अपना यूज़रनेम और पासवर्ड।
 *Use the pump Wi-Fi → open **Petrol Pump** from the home screen → your own username and password.*
 
-फ़ोन पर **My page (मेरा पेज)** खुलता है, उसमें दो काम: **उधारी** और **मेरा आज का UPI**। काउंटर वाले लैपटॉप पर पूरा **Register (रोकड़)** खुलता है।
-*On your phone: My page with two jobs, udhari and my UPI today. The counter laptop shows the full register.*
+फ़ोन पर **My page (मेरा पेज)** खुलता है, उसमें दो काम: **उधारी** और **UPI / कार्ड मिला**। काउंटर वाले लैपटॉप पर पूरा **Register (रोकड़)** खुलता है।
+*On your phone: My page with two jobs, udhari and UPI received. The counter laptop shows the full register.*
 
 ## फ़ोन पर · On your phone
 - **उधारी दी / मिली:** ग्राहक चुनें → **Given · दी** या **Received · मिली** → रकम → *Save*. नया ग्राहक: *New udhari customer*.
-- **मेरा आज का UPI:** QR पर आपको अब तक **कुल** कितना मिला, वह लिखें → *Save total*। हर पेमेंट अलग से नहीं, सिर्फ़ कुल रकम। बाद में नया कुल लिखेंगे तो पुराना बदल जाएगा।
-  *Type the total UPI you received so far today, not each payment. A new total replaces the old one.*
+- **UPI / कार्ड मिला:** पहले **UPI** या **Card** चुनें, फिर हर बार QR या कार्ड मशीन पर पैसा आए, वह रकम लिखें → *Add*। आपका आज का कुल अपने आप जुड़ता है और लैपटॉप पर दिखता है।
+  गलत रकम लिख दी? उस लाइन पर **wrong** दबाएँ, फिर सही रकम लिखें।
+  *Choose UPI or Card, enter each amount received → Add. Your total adds up by itself. Typed wrong? Press "wrong" and enter it again.*
+  - अपने QR पर आया हर UPI पैसा ज़रूर लिखें: शाम को मालिक Paytm से आपके QR का कुल मिलाएँगे, फ़र्क आपके नाम पर दिखेगा। अगर मालिक ने UPI लिखना बंद किया है तो सिर्फ़ **Card** दिखेगा।
+    *Write every UPI payment on your own QR: the owner checks your QR's Paytm total against it, and any difference shows under your name. If the owner has switched UPI typing off, only Card is shown.*
 - शाम को मालिक/काउंटर QR ऐप का कुल सबके जोड़ से मिलाते हैं।
 
 ## सुबह 8 बजे · 8 AM
@@ -25,6 +28,9 @@
 - **नया ग्राहक:** *New udhari customer* → नाम, रकम, गाड़ी नंबर → *Add*.
 - **दूध, चाय, HPCL, बैंक जमा:** *Expenses* → प्रकार → रकम → Cash या UPI → *Save*.
 - **लुब्रिकेंट / अन्य आमदनी:** *Lube / other income* → रकम → Cash / UPI / Card → *Save*.
+
+- **टेस्टिंग (Testing fuel):** नोज़ल चेक करने के लिए तेल निकाला? *Testing fuel* → नोज़ल → लीटर → टैंक में वापस डाला तो टिक रहने दें → *Save test*। यह बिक्री में नहीं गिना जाएगा।
+  *Fuel drawn to test a nozzle: Testing fuel → nozzle → litres → Save test. It is not counted as a sale.*
 
 ## ध्यान दें · Remember
 - ✓ हरा = सेव हो गया। ✗ लाल **NOT saved** = सेव नहीं हुआ: कारण पढ़ें, ठीक करें, फिर *Save* दबाएँ।

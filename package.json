@@ -9,6 +9,7 @@
     "lint": "eslint",
     "db:setup": "tsx scripts/db-setup.ts",
     "db:migrate": "tsx scripts/migrate.ts",
+    "db:restore": "tsx scripts/restore.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "backup": "tsx scripts/backup.ts",

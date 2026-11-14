@@ -29,8 +29,8 @@ export async function GET(req: NextRequest) {
         ids = (
           await c.query(
             `SELECT p.id FROM parties p LEFT JOIN journal_lines l ON l.party_id = p.id LEFT JOIN journal_entries e ON e.id = l.entry_id AND e.business_date <= $1
-              WHERE p.kind = 'CUSTOMER' GROUP BY p.id, p.name
-             HAVING $2::boolean = false OR COALESCE(SUM(l.debit - l.credit) FILTER (WHERE e.id IS NOT NULL), 0) <> 0 ORDER BY lower(p.name)`,
+              WHERE p.kind = 'CUSTOMER' GROUP BY p.id, p.name, p.active
+             HAVING (p.active OR COALESCE(SUM(l.debit - l.credit) FILTER (WHERE e.id IS NOT NULL), 0) <> 0) AND ($2::boolean = false OR COALESCE(SUM(l.debit - l.credit) FILTER (WHERE e.id IS NOT NULL), 0) <> 0) ORDER BY lower(p.name)`,
             [to, all === "due"],
           )
         ).rows.map((r) => r.id as string);

@@ -23,7 +23,19 @@ type Row = {
 type Result = { ok: true; status: "ACCEPTED" | "REVIEW"; note?: string } | { ok: false; message: string };
 
 /** 8 AM next day: closing reading of all six nozzles in one table, litres and value shown as you type. */
-export function NozzleClosing({ closingDate, rows, rates, locked }: { closingDate: string; rows: Row[]; rates: Record<string, string | null>; locked: boolean }) {
+export function NozzleClosing({
+  closingDate,
+  rows,
+  rates,
+  locked,
+  tests = {},
+}: {
+  closingDate: string;
+  rows: Row[];
+  rates: Record<string, string | null>;
+  locked: boolean;
+  tests?: Record<string, string>; // testing litres since the last reading, per nozzle: not a sale
+}) {
   const router = useRouter();
   const [vals, setVals] = useState<Record<string, string>>({});
   const [results, setResults] = useState<Record<string, Result>>({});
@@ -33,7 +45,8 @@ export function NozzleClosing({ closingDate, rows, rates, locked }: { closingDat
   const calc = (r: Row) => {
     const v = vals[r.nozzleId];
     if (!v || !r.lastReading || !/^\d+(\.\d{1,2})?$/.test(v)) return null;
-    const litres = new Decimal(v).minus(r.lastReading);
+    const raw = new Decimal(v).minus(r.lastReading);
+    const litres = raw.lt(0) ? raw : raw.minus(tests[r.nozzleId] ?? 0);
     const rate = rates[r.fuel];
     return { litres, value: rate && litres.gte(0) ? litres.times(rate).toDecimalPlaces(2, Decimal.ROUND_HALF_UP) : null };
   };
@@ -127,7 +140,9 @@ export function NozzleClosing({ closingDate, rows, rates, locked }: { closingDat
                       />
                     )}
                   </td>
-                  <td className={`num ${x && x.litres.lt(0) ? "text-red-700" : ""}`}>{x ? (x.litres.lt(0) ? "lower!" : num(x.litres.toFixed(2))) : ""}</td>
+                  <td className={`num ${x && x.litres.lt(0) ? "text-red-700" : ""}`}>{x ? (x.litres.lt(0) ? "lower!" : num(x.litres.toFixed(2))) : ""}
+                    {tests[r.nozzleId] && <div className="text-[0.7rem] text-muted">− {num(tests[r.nozzleId])} L test</div>}
+                  </td>
                   <td className="num">{x?.value ? inr(x.value.toFixed(2)) : ""}</td>
                   <td className="text-xs">
                     {res ? (

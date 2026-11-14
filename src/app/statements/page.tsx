@@ -8,6 +8,7 @@ import { ENTRY_KINDS } from "@/server/money/service";
 import { drcr, periodFrom, periodStatement } from "@/server/reports/service";
 import { requireUser } from "@/server/session";
 import { PrintButton } from "../customers/[id]/print-button";
+import { PeriodChooser } from "./chooser";
 
 export const dynamic = "force-dynamic";
 
@@ -20,6 +21,15 @@ export default async function StatementsPage({ searchParams }: PageProps<"/state
   const c = await pool().connect();
   try {
     const today = await currentBusinessDate(c);
+    const chosen = ["daily", "monthly", "custom"].includes(one(sp.type) ?? "");
+    if (!chosen) {
+      // first ask what kind of statement; nothing is shown until a period is chosen
+      return (
+        <Page title="Statements · हिसाब विवरण" active="statements" wide>
+          <PeriodChooser today={today} current={null} />
+        </Page>
+      );
+    }
     const per = periodFrom({ type: one(sp.type), date: one(sp.date), month: one(sp.month), from: one(sp.from), to: one(sp.to) }, today);
     const s = await periodStatement(c, per);
     const t = s.totals;
@@ -28,41 +38,15 @@ export default async function StatementsPage({ searchParams }: PageProps<"/state
 
     return (
       <Page title="Statements · हिसाब विवरण" active="statements" wide>
-        {/* period chooser */}
-        <form className="no-print mb-3 flex flex-wrap items-end gap-2 rounded border border-line bg-surface p-3" action="/statements">
-          <label>
-            <span className="block text-xs text-muted">Statement</span>
-            <select name="type" defaultValue={per.type} className="inp w-32">
-              <option value="daily">Daily</option>
-              <option value="monthly">Monthly</option>
-              <option value="custom">From – To</option>
-            </select>
-          </label>
-          <label>
-            <span className="block text-xs text-muted">Day (daily)</span>
-            <input type="date" name="date" defaultValue={per.type === "daily" ? per.from : today} className="inp w-40" />
-          </label>
-          <label>
-            <span className="block text-xs text-muted">Month (monthly)</span>
-            <input type="month" name="month" defaultValue={per.type === "monthly" ? per.from.slice(0, 7) : today.slice(0, 7)} className="inp w-40" />
-          </label>
-          <label>
-            <span className="block text-xs text-muted">From</span>
-            <input type="date" name="from" defaultValue={per.type === "custom" ? per.from : today.slice(0, 8) + "01"} className="inp w-40" />
-          </label>
-          <label>
-            <span className="block text-xs text-muted">To</span>
-            <input type="date" name="to" defaultValue={per.type === "custom" ? per.to : today} className="inp w-40" />
-          </label>
-          <button className="btn">Show</button>
-          <span className="ml-auto flex gap-2">
+        <PeriodChooser today={today} current={chosen ? { type: per.type, from: per.from, to: per.to } : null} />
+        {chosen && (
+          <div className="no-print mb-3 flex justify-end gap-2">
             <a href={excel} className="btn-light inline-flex items-center">
               ⬇ Excel
             </a>
             <PrintButton />
-          </span>
-        </form>
-
+          </div>
+        )}
         {/* heading, as on a printed statement */}
         <div className="mb-3 border-b-2 border-brand pb-2 text-center">
           <div className="text-xl font-bold">{s.pump.name}</div>

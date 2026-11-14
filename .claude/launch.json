@@ -23,6 +23,20 @@
       "env": {
         "DB_NAME": "pump_demo"
       }
+    },
+    {
+      "name": "pump-prod-demo",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "next",
+        "start",
+        "-p",
+        "3002"
+      ],
+      "port": 3002,
+      "env": {
+        "DB_NAME": "pump_demo"
+      }
     }
   ]
 }

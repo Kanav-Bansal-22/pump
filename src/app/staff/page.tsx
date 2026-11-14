@@ -3,7 +3,7 @@ import { AutoRefresh } from "@/components/auto-refresh";
 import { Bi, Panel, Shell } from "@/components/ui";
 import { inr, niceDate } from "@/lib/format";
 import { pool } from "@/server/db";
-import { customerList, entryDates } from "@/server/money/service";
+import { customerList, entryDates, myUpiPayments, typeEachUpi } from "@/server/money/service";
 import { requireUser } from "@/server/session";
 import { NewCustomer } from "../register/new-customer";
 import { Udhari } from "../register/udhari";
@@ -36,13 +36,8 @@ export default async function StaffPage() {
     }
     const dates = await entryDates(c);
     const customers = await customerList(c);
-    const upi = (
-      await c.query("SELECT amount::text, at FROM staff_upi_totals WHERE site_id = $1 AND business_date = $2 AND user_id = $3 ORDER BY at DESC", [
-        site.id,
-        dates.today,
-        user.id,
-      ])
-    ).rows.map((r) => ({ amount: r.amount as string, at: new Date(r.at).toISOString() }));
+    const upi = await myUpiPayments(c, site.id, dates.today, user.id);
+    const upiOn = await typeEachUpi(c);
     const mine = (
       await c.query(
         `SELECT m.entry_no::text AS no, m.kind, m.amount::text AS amount, m.mode_code AS mode, m.vehicle_no AS vehicle, p.name AS party, m.entered_at AS at,
@@ -65,7 +60,7 @@ export default async function StaffPage() {
         <div className="space-y-3">
           <Udhari customers={customers} dates={dates} />
           <NewCustomer dates={dates} />
-          <MyUpi date={dates.today} history={upi} />
+          <MyUpi date={dates.today} totals={upi.totals} payments={upi.payments} upiOn={upiOn} />
           <Panel title={<Bi en="My entries" hi="मेरी एंट्री" />} right={<Link href="/customers" className="underline">all customers</Link>}>
             {mine.length === 0 ? (
               <p className="text-sm text-muted">Nothing entered by you yet.</p>

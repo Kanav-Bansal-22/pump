@@ -6,7 +6,7 @@ import { Field, SaveStatus, SubmitButton, type SaveState } from "@/components/fo
 import { Card } from "@/components/ui";
 import { apiPost, keepKey, newEntryKey } from "@/lib/api-client";
 
-type U = { id: string; name: string; username: string; role: string; active: boolean; mustChange: boolean; homeView: "register" | "simple"; locked: boolean; lastLogin: string | null };
+type U = { id: string; name: string; username: string; role: string; active: boolean; mustChange: boolean; homeView: "register" | "simple"; ownQr: boolean; locked: boolean; lastLogin: string | null };
 
 function useUserAction() {
   const router = useRouter();
@@ -27,14 +27,45 @@ function useUserAction() {
   return { state, run };
 }
 
-export function UsersEditor({ users, meId }: { users: U[]; meId: string }) {
+export function UsersEditor({ users, meId, typeEach }: { users: U[]; meId: string; typeEach: boolean }) {
   return (
     <div className="space-y-4">
+      <UpiTyping on={typeEach} qrCount={users.filter((u) => u.active && u.ownQr).length} />
       <AddUser />
       {users.map((u) => (
         <UserCard key={u.id} u={u} isMe={u.id === meId} />
       ))}
     </div>
+  );
+}
+
+/** Pump-wide: do workers type each UPI payment on their phone (checked against their own QR at End day)? */
+function UpiTyping({ on, qrCount }: { on: boolean; qrCount: number }) {
+  const { state, run } = useUserAction();
+  return (
+    <Card>
+      <h2 className="mb-1 text-lg font-bold">UPI on workers&apos; phones / फ़ोन पर UPI</h2>
+      <p className="mb-2 text-sm text-muted">
+        {qrCount > 0
+          ? `${qrCount} worker${qrCount === 1 ? " has" : "s have"} their own Paytm QR. At End day you type each QR's total from the Paytm Business app.`
+          : "No worker has their own QR yet: tick 'Own Paytm QR' on each worker below."}
+      </p>
+      <label className="flex items-center gap-2 text-base">
+        <input
+          type="checkbox"
+          className="h-5 w-5"
+          checked={on}
+          onChange={(e) =>
+            run(
+              { action: "setTypeEachUpi", on: e.target.checked },
+              e.target.checked ? "Workers type each UPI payment again." : "Workers no longer type UPI payments; only the QR totals at End day count.",
+            )
+          }
+        />
+        Workers type each UPI payment on their phone (catches fake / failed payment screens)
+      </label>
+      <SaveStatus state={state} />
+    </Card>
   );
 }
 
@@ -104,6 +135,22 @@ function UserCard({ u, isMe }: { u: U; isMe: boolean }) {
             <option value="register">Full register (counter laptop)</option>
           </select>
         </label>
+        {u.role === "STAFF" && (
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              className="h-4 w-4"
+              checked={u.ownQr}
+              onChange={(e) =>
+                run(
+                  { action: "setOwnQr", userId: u.id, on: e.target.checked },
+                  e.target.checked ? `${u.name} has their own QR: type its Paytm total at End day.` : `${u.name} no longer has their own QR.`,
+                )
+              }
+            />
+            Own Paytm QR
+          </label>
+        )}
       </div>
       <div className="mt-3 flex flex-wrap gap-2">
         <button type="button" className="rounded-lg border border-line px-3 py-2" onClick={() => setShowReset((x) => !x)}>

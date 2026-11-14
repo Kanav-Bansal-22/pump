@@ -1,8 +1,9 @@
 # Installs the petrol pump app as an always-on local server on this laptop.
 #   powershell -ExecutionPolicy Bypass -File scripts\install-server.ps1
 # 1. builds the production app
-# 2. registers "PetrolPump Server" (starts at logon of this Windows user, keeps running, restarts on crash)
-# 3. ONE admin prompt: firewall rule (port 80, Private networks only, local subnet only) and
+# 2. registers "PetrolPump Server" (keeps running, restarts on crash; the admin step makes it start at boot,
+#    before anyone signs in, running as this Windows user without storing a password)
+# 3. ONE admin prompt: start-at-boot, firewall rule (port 80, Private networks only, local subnet only) and
 #    power plan (never sleep / hibernate on mains power, closing the lid does nothing)
 # 4. starts the server and checks /api/health
 # Undo: scripts\uninstall-server.ps1
@@ -29,6 +30,8 @@ Write-Output "Registered scheduled task 'PetrolPump Server' (starts at logon)."
 if (-not $SkipSystem) {
   $admin = @"
 `$ErrorActionPreference = 'Stop'
+Set-ScheduledTask -TaskName 'PetrolPump Server' -Principal (New-ScheduledTaskPrincipal -UserId '$env:USERNAME' -LogonType S4U -RunLevel Limited) ``
+  -Trigger @((New-ScheduledTaskTrigger -AtStartup), (New-ScheduledTaskTrigger -AtLogOn -User '$env:USERNAME')) | Out-Null
 Get-NetFirewallRule -DisplayName 'PetrolPump app (LAN)' -ErrorAction SilentlyContinue | Remove-NetFirewallRule
 New-NetFirewallRule -DisplayName 'PetrolPump app (LAN)' -Direction Inbound -Protocol TCP -LocalPort $Port -Profile Private -RemoteAddress LocalSubnet -Action Allow | Out-Null
 powercfg /change standby-timeout-ac 0
@@ -41,7 +44,7 @@ powercfg /setactive SCHEME_CURRENT
   $p = Start-Process powershell -Verb RunAs -Wait -PassThru -WindowStyle Hidden -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $tmp
   Remove-Item $tmp -ErrorAction SilentlyContinue
   if ($p.ExitCode -ne 0) { Write-Output "WARNING: firewall / power settings were not applied (admin step exit $($p.ExitCode))." }
-  else { Write-Output "Firewall: port $Port open for Private networks (local subnet only). Power: no sleep on mains, lid close = do nothing." }
+  else { Write-Output "Starts at boot (no sign-in needed). Firewall: port $Port open for Private networks (local subnet only). Power: no sleep on mains, lid close = do nothing." }
 }
 
 Start-ScheduledTask -TaskName 'PetrolPump Server'

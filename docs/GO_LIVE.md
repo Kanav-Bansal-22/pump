@@ -8,7 +8,7 @@ The paper Rokad is **kept in parallel for 2 weeks**. Every day, compare the app'
 |---|---|---|---|
 | 1 | Put the laptop on the **pump's own Wi-Fi**. In Windows: Settings → Network → Wi-Fi → (pump network) → *Network profile type* = **Private**. | owner | ☐ |
 | 2 | In the **router**, reserve the laptop's IP (DHCP reservation / "address binding"), so the address never changes. Write the IP here: `http://________________` | owner / helper | ☐ |
-| 3 | Install the always-on server (one admin prompt: firewall for the pump Wi-Fi only, laptop never sleeps on mains):<br>`powershell -ExecutionPolicy Bypass -File scripts\install-server.ps1` | helper | ☐ |
+| 3 | Install the always-on server (one admin prompt: starts at boot without sign-in, firewall for the pump Wi-Fi only, laptop never sleeps on mains):<br>`powershell -ExecutionPolicy Bypass -File scripts\install-server.ps1`<br>Updating the app later: just `npm run build`; the server notices the new build and restarts itself within a minute (no admin needed). | helper | ☐ |
 | 4 | Windows: let the laptop **log in automatically** after a power cut (or make sure someone logs in). The server and backups start at login. | helper | ☐ |
 | 5 | Each staff phone: join the pump Wi-Fi → Chrome → open the address from step 2 → ⋮ menu → **Add to Home screen**. Let Chrome save the password. | each person | ☐ |
 | 6 | Switch to the **real database**:<br>`powershell -ExecutionPolicy Bypass -File scripts\use-database.ps1 prod`<br>The orange DEMO banner must disappear. | helper | ☐ |
@@ -42,7 +42,7 @@ A day can be ended only from **5 AM the next morning** (the night still belongs 
 | Problem | What to do |
 |---|---|
 | Phone says *NOT saved: no connection* | Check the phone is on the **pump Wi-Fi** and the laptop is on. The typed values stay on the screen: press **Save** again (it never saves twice). |
-| Nothing opens on phones | Is the laptop on and logged in? Open `http://localhost` on the laptop itself. Still nothing: restart the laptop. |
+| Nothing opens on phones | Is the laptop on and on the pump Wi-Fi? (No sign-in needed; give it 1–2 minutes after switching on.) Open `http://localhost` on the laptop itself. Still nothing: look at `logs\server-*.log`, then restart the laptop. |
 | Power cut | Laptop runs on battery; the **router** goes off, so phones cannot reach the app. Write on paper and enter it after the power returns (a ₹1,500 router UPS avoids this). |
 | Typed a wrong udhari / payment | Owner: Day book → **cancel** (with a reason) → enter it again correctly. |
 | Typed a wrong meter reading | It is not editable (by design). Tell the owner; corrections with approval are the next feature. |
