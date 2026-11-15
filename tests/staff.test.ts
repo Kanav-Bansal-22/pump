@@ -5,7 +5,8 @@ import { createStandardLayout, setOwnQr, setTypeEachUpi } from "@/server/config/
 import { openTests, recordTest, voidTest } from "@/server/meters/service";
 import { dayMessage } from "@/components/whatsapp-share";
 import { runIdempotent } from "@/server/idempotency";
-import { addMyUpi, cancelMyUpi, createEntry, declareCollections, getDayBalance, type EntryInput } from "@/server/money/service";
+import { addOpeningBalance } from "@/server/money/opening";
+import { addMyUpi, cancelMyUpi, createEntry, customerList, declareCollections, getDayBalance, removeCustomer, reverseEntry, type EntryInput } from "@/server/money/service";
 import { connect, tx } from "./helpers/db";
 
 let c: Client;
@@ -233,5 +234,33 @@ describe("each worker's own Paytm QR", () => {
     expect((await inTx(() => getDayBalance(c, today))).qr.typeEach).toBe(false);
     await inTx(() => setTypeEachUpi(c, true));
     expect((await upi(ramesh, "100")).mode).toBe("UPI");
+  });
+});
+
+describe("udhari catch-up for earlier days, and removing a customer", () => {
+  it("owner can enter udhari for days after the old balances; staff and other kinds cannot", async () => {
+    const day = async (n: number) => (await c.query("SELECT ($1::date - $2::int)::text d", [today, n])).rows[0].d as string;
+    const [d3, d2] = [await day(3), await day(2)];
+    const site = (await c.query("SELECT id FROM sites LIMIT 1")).rows[0].id;
+    const cust = (await c.query("INSERT INTO parties (kind, name, created_by) VALUES ('CUSTOMER','Catchup Transport',$1) RETURNING id", [owner.id])).rows[0].id;
+    await inTx(() => addOpeningBalance(c, owner, { siteId: site, partyId: cust, amount: "5000", date: d3 }));
+
+    const e = await entry(owner, { kind: "CREDIT_SALE", businessDate: d2, party: { id: cust }, amount: "700" });
+    expect(e.businessDate).toBe(d2);
+    // on / before the old balances' date it is already in them
+    await expect(entry(owner, { kind: "CREDIT_SALE", businessDate: d3, party: { id: cust }, amount: "300" })).rejects.toThrow(/old balances are as on/);
+    await expect(entry(owner, { kind: "CREDIT_SALE", businessDate: "2099-01-01", party: { id: cust }, amount: "300" })).rejects.toThrow(/to today/);
+    await expect(entry(ramesh, { kind: "CREDIT_SALE", businessDate: d2, party: { id: cust }, amount: "300" })).rejects.toThrow(/today's business day/);
+    await expect(entry(owner, { kind: "LUBE_SALE", businessDate: d2, amount: "300", mode: "CASH" })).rejects.toThrow(/today's business day/);
+
+    // remove: refused while a later entry leaves a balance; after cancelling it, the old balance is cancelled too
+    await expect(inTx(() => removeCustomer(c, owner, { partyId: cust, reason: "added twice" }))).rejects.toThrow(/still has udhari of ₹700/);
+    await expect(inTx(() => removeCustomer(c, ramesh, { partyId: cust, reason: "added twice" }))).rejects.toThrow(/not allowed/);
+    await inTx(() => reverseEntry(c, owner, { entryId: e.entryId, reason: "typed by mistake" }));
+    const r = await inTx(() => removeCustomer(c, owner, { partyId: cust, reason: "added twice" }));
+    expect(r.openingCancelled).toBe("5000.00");
+    expect((await c.query("SELECT COALESCE(SUM(debit - credit),0)::numeric(14,2)::text b FROM journal_lines WHERE party_id = $1", [cust])).rows[0].b).toBe("0.00");
+    expect(((await inTx(() => customerList(c))) as Array<{ id: string }>).some((x) => x.id === cust)).toBe(false);
+    await expect(inTx(() => removeCustomer(c, owner, { partyId: cust, reason: "added twice" }))).rejects.toThrow(/already removed/);
   });
 });

@@ -7,6 +7,7 @@ import { customerLedger } from "@/server/reports/service";
 import { requireUser } from "@/server/session";
 import { OldBalanceForm } from "./old-balance-form";
 import { PrintButton } from "./print-button";
+import { RemoveCustomer } from "./remove-customer";
 
 export const dynamic = "force-dynamic";
 
@@ -35,8 +36,23 @@ export default async function CustomerLedgerPage({ params, searchParams }: PageP
     if (!l) notFound();
     const pump = (await c.query("SELECT name FROM sites WHERE active LIMIT 1")).rows[0]?.name ?? "";
     const hasOpening = (await c.query("SELECT 1 FROM opening_balances WHERE party_id = $1", [id])).rowCount;
+    const pos = (
+      await c.query(
+        `SELECT p.active, p.remarks,
+                (SELECT o.amount::text FROM opening_balances o
+                  WHERE o.party_id = p.id AND NOT EXISTS (SELECT 1 FROM journal_entries r WHERE r.reverses_entry_id = o.journal_entry_id)) AS opening,
+                (SELECT COALESCE(SUM(debit - credit), 0)::numeric(14,2)::text FROM journal_lines WHERE party_id = p.id) AS balance
+           FROM parties p WHERE p.id = $1`,
+        [id],
+      )
+    ).rows[0] as { active: boolean; remarks: string | null; opening: string | null; balance: string };
     return (
       <Page title={l.party.name} back="/customers" active="customers">
+        {!pos.active && (
+          <div className="mb-3 rounded border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-900">
+            Removed customer: not shown in lists. {pos.remarks}
+          </div>
+        )}
         <form className="no-print mb-3 flex flex-wrap items-end gap-2 rounded border border-line bg-surface p-3" action={`/customers/${id}`}>
           <label>
             <span className="block text-xs text-muted">From</span>
@@ -58,7 +74,8 @@ export default async function CustomerLedgerPage({ params, searchParams }: PageP
           </span>
         </form>
         <LedgerSheet l={l} pump={pump} />
-        {!hasOpening && user.permissions.includes("import.run") && <OldBalanceForm partyId={id} today={today} />}
+        {!hasOpening && pos.active && user.permissions.includes("import.run") && <OldBalanceForm partyId={id} today={today} />}
+        {pos.active && user.role === "OWNER" && <RemoveCustomer partyId={id} name={l.party.name} opening={pos.opening} balance={pos.balance} />}
       </Page>
     );
   } finally {

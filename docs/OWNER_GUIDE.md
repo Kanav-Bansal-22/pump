@@ -47,3 +47,16 @@ Fuel drawn to test a nozzle is entered in **Testing fuel** on the register (nozz
 - At **End day**, the UPI box becomes one box per worker's QR plus **Shop QR**. Type each QR's total from the Paytm Business app. The app adds them up as the day's UPI.
 - The Day summary shows each worker: **typed on phone**, **Paytm total**, and ✓ or the difference (e.g. "₹500 on the QR not typed"). The WhatsApp message names any worker whose QR does not match.
 - **Workers type each UPI payment** (Staff logins, top) is on at first. It catches fake or failed payment screens. If the totals always match for a few weeks you can switch it off; phones then take card payments only and only the Paytm totals count.
+
+## Udhari for earlier days (catch-up)
+The old balances were imported as on a date (e.g. 12 Nov). Udhari given or received **after** that date and before you started using the app:
+- Register → **Udhari** → pick the customer → Given / Received → amount → in the day box choose **Earlier day…** and pick the date → *Save*.
+- Only the owner sees *Earlier day…*, and only for udhari. It allows the days after the old balances' date (and at most 31 days back), not ended days. Days up to the old balances' date are refused: they are already inside the old balance.
+
+## Remove a customer
+Udhari customers → open the customer → **Remove this customer** (owner only) → write the reason → *Remove*.
+- Their old (imported) balance is cancelled and they disappear from every list. Nothing is erased; the customer page still opens from old links and shows "Removed".
+- If they have later udhari entries that leave money owing (or an advance), removing is refused: cancel those entries in the day book first, or enter the money received.
+
+## Customer list: Debit / Credit
+Like the Tally list: **Debit** = the customer owes the pump; **Credit** = advance (the pump owes them). The Grand total row adds each column; *Net udhari* = debit − credit.

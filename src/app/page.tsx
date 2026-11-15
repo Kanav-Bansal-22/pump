@@ -6,7 +6,7 @@ import { niceDate } from "@/lib/format";
 import { pool, q } from "@/server/db";
 import { D } from "@/server/money";
 import { closingBusinessDate, getBoard, getRates, openTests } from "@/server/meters/service";
-import { customerList, entryDates, getDayBalance, goLiveDate } from "@/server/money/service";
+import { catchUpFrom, customerList, entryDates, getDayBalance, goLiveDate } from "@/server/money/service";
 import { requireUser } from "@/server/session";
 import { DayBook } from "./register/day-book";
 import { DaySummary } from "./register/day-summary";
@@ -43,6 +43,7 @@ export default async function RegisterPage() {
     const ratesToday = await getRates(c, dates.today);
     const ratesClosing = closingDate === dates.today ? ratesToday : await getRates(c, closingDate);
     const customers = await customerList(c);
+    const earliest = isOwner ? (await catchUpFrom(c, dates.today)).date : null;
     const tests = await openTests(c);
     const testLitres: Record<string, string> = {};
     for (const t of tests.filter((x) => !x.voided)) testLitres[t.nozzleId] = new D(testLitres[t.nozzleId] ?? 0).plus(t.litres).toFixed(3);
@@ -84,7 +85,7 @@ export default async function RegisterPage() {
           {/* left: what happens during the day */}
           <div className="min-w-0 space-y-3">
             <Rates date={dates.today} rates={ratesToday.map((r) => ({ code: r.code, short: r.short, name: r.name_en, rate: r.rate, setBy: r.set_by }))} canSet={user.permissions.includes("price.set")} />
-            <Udhari customers={customers} dates={dates} />
+            <Udhari customers={customers} dates={dates} earliest={earliest} />
             <NewCustomer dates={dates} />
             <Expenses dates={dates} isOwner={isOwner} />
             <Income dates={dates} />

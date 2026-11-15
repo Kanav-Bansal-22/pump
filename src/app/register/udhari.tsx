@@ -31,7 +31,15 @@ const DESC: Record<string, string> = {
 };
 
 /** Udhari given / received against an existing customer, with the customer's account shown below. */
-export function Udhari({ customers, dates }: { customers: Array<Cust & Record<string, unknown>>; dates: { today: string; yesterday: string | null } }) {
+export function Udhari({
+  customers,
+  dates,
+  earliest,
+}: {
+  customers: Array<Cust & Record<string, unknown>>;
+  dates: { today: string; yesterday: string | null };
+  earliest?: string | null; // owner: udhari can also go to an earlier day from this date
+}) {
   const [cust, setCust] = useState<Cust | null>(null);
   const [type, setType] = useState<"GIVEN" | "RECEIVED">("GIVEN");
   const [amount, setAmount] = useState("");
@@ -68,7 +76,7 @@ export function Udhari({ customers, dates }: { customers: Array<Cust & Record<st
         vehicleNo: type === "GIVEN" ? vehicle || null : null,
         mode: type === "RECEIVED" ? mode : null,
       },
-      (d) => `#${d.entryNo}: ${type === "GIVEN" ? "udhari given to" : "received from"} ${who.name}, ${inr(d.amount)}`,
+      (d) => `#${d.entryNo}: ${type === "GIVEN" ? "udhari given to" : "received from"} ${who.name}, ${inr(d.amount)}${day !== dates.today ? ` (${niceDate(day)})` : ""}`,
       () => {
         setAmount("");
         setVehicle("");
@@ -113,7 +121,7 @@ export function Udhari({ customers, dates }: { customers: Array<Cust & Record<st
             </select>
           )}
           <datalist id="cust-vehicles">{stmt?.vehicles.map((v) => <option key={v} value={v} />)}</datalist>
-          <DayChoice dates={dates} value={day} onChange={setDay} />
+          <DayChoice dates={dates} value={day} onChange={setDay} earliest={earliest} />
           <button className="btn" disabled={!cust || !amount || state.kind === "saving"}>
             {state.kind === "saving" ? "Saving…" : "Save"}
           </button>

@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { ClientBase } from "pg";
 import { AppError, Errors } from "../errors";
-import { D, parseAmount, type Dec } from "../money";
+import { D, formatINR, parseAmount, type Dec } from "../money";
 
 // ---------------------------------------------------------------------------
 // Money received by other modes (machine / app totals for the day)
@@ -286,6 +286,19 @@ async function siteId(c: ClientBase): Promise<string> {
  * 8 AM cut-over and the end of the closing window (11 AM) the previous day is still offered, unless it
  * was already submitted or locked.
  */
+/**
+ * Owner catch-up window for udhari on earlier days: from the day after the old balances' date (they
+ * already include everything up to it), at most 31 days back.
+ */
+export async function catchUpFrom(c: ClientBase, today: string): Promise<{ date: string; openingDate: string | null }> {
+  const r = await c.query(
+    `SELECT (SELECT max(opening_date)::text FROM opening_balances) AS od,
+            GREATEST((SELECT max(opening_date) + 1 FROM opening_balances), $1::date - 31)::text AS d`,
+    [today],
+  );
+  return { date: r.rows[0].d, openingDate: r.rows[0].od };
+}
+
 export async function entryDates(c: ClientBase): Promise<{ today: string; yesterday: string | null }> {
   const s = await siteId(c);
   const r = await c.query(
@@ -396,8 +409,21 @@ export async function createEntry(
   const site = await siteId(c);
   const dates = await entryDates(c);
   const date = input.businessDate ?? dates.today;
-  if (date !== dates.today && date !== dates.yesterday)
-    throw new AppError("BAD_DAY", 409, "Entries can only go to today's business day.", "प्रविष्टि केवल आज के दिन में।");
+  if (date !== dates.today && date !== dates.yesterday) {
+    // Owner catch-up: udhari for an earlier day (e.g. days after the old balances were imported)
+    const udhari = input.kind === "CREDIT_SALE" || input.kind === "CUSTOMER_REPAYMENT";
+    const from = user.role === "OWNER" && udhari ? await catchUpFrom(c, dates.today) : null;
+    if (!from) throw new AppError("BAD_DAY", 409, "Entries can only go to today's business day.", "प्रविष्टि केवल आज के दिन में।");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date > dates.today || date < from.date)
+      throw new AppError(
+        "BAD_DAY",
+        409,
+        from.openingDate && date <= from.openingDate
+          ? `The old balances are as on ${from.openingDate}: udhari up to that day is already in them. Earlier days can start from ${from.date}.`
+          : `Udhari for an earlier day can go from ${from.date} to today.`,
+        "यह तारीख नहीं चल सकती।",
+      );
+  }
   if ((await dayStatus(c, site, date)) !== "OPEN")
     throw new AppError("DAY_CLOSED", 409, "This day's cash is already counted / locked. Ask the owner.", "इस दिन का हिसाब बंद हो चुका है।");
 
@@ -933,6 +959,68 @@ export async function customerList(c: ClientBase) {
       GROUP BY p.id ORDER BY lower(p.name)`,
   );
   return r.rows as Array<{ id: string; name: string; phone: string | null; opening: string; given: string; received: string; balance: string; last_date: string | null; vehicles: string | null }>;
+}
+
+// ---------------------------------------------------------------------------
+// Remove an udhari customer (owner). Nothing is erased: the old (imported) balance is cancelled by a
+// reversal and the customer is hidden from every list. Refused while other entries leave a balance.
+// ---------------------------------------------------------------------------
+export async function removeCustomer(c: ClientBase, owner: { id: string; role: string }, input: { partyId: string; reason: string }) {
+  if (owner.role !== "OWNER") throw Errors.forbidden();
+  const reason = String(input.reason ?? "").trim();
+  if (reason.length < 5) throw Errors.badInput("Write the reason (at least 5 letters).");
+  await c.query("SELECT pg_advisory_xact_lock(hashtext('party:' || $1))", [input.partyId]);
+  const p = (await c.query("SELECT id, name, active FROM parties WHERE id = $1 AND kind = 'CUSTOMER'", [input.partyId])).rows[0];
+  if (!p) throw Errors.badInput("Customer not found.");
+  if (!p.active) throw new AppError("ALREADY_REMOVED", 409, `${p.name} is already removed.`, "यह ग्राहक पहले ही हटाया गया है।");
+  const ob = (
+    await c.query(
+      `SELECT o.journal_entry_id AS jid, o.amount::text, o.opening_date::text AS d,
+              EXISTS (SELECT 1 FROM journal_entries r WHERE r.reverses_entry_id = o.journal_entry_id) AS reversed
+         FROM opening_balances o WHERE o.party_id = $1`,
+      [input.partyId],
+    )
+  ).rows[0] as { jid: string; amount: string; d: string; reversed: boolean } | undefined;
+  const bal = new D(
+    (await c.query("SELECT COALESCE(SUM(debit - credit), 0)::numeric(14,2)::text AS b FROM journal_lines WHERE party_id = $1", [input.partyId])).rows[0].b,
+  );
+  const opening = ob && !ob.reversed ? new D(ob.amount) : new D(0);
+  const rest = bal.minus(opening);
+  if (!rest.isZero())
+    throw new AppError(
+      "HAS_ENTRIES",
+      409,
+      `${p.name} still has ${rest.gt(0) ? "udhari of" : "an advance of"} ${formatINR(rest.abs().toFixed(2))} from entries after the old balance. Cancel those entries in the day book first (or enter the money received), then remove.`,
+      "पहले इस ग्राहक की प्रविष्टियाँ रद्द करें।",
+    );
+  if (!opening.isZero()) {
+    const site = await siteId(c);
+    const date = (await dayStatus(c, site, ob!.d)) === "OPEN" ? ob!.d : (await entryDates(c)).today;
+    const orig = await c.query(
+      `SELECT a.code, l.debit::text, l.credit::text, l.party_kind, l.party_id FROM journal_lines l JOIN accounts a ON a.id = l.account_id
+        WHERE l.entry_id = $1 ORDER BY l.line_no`,
+      [ob!.jid],
+    );
+    await postJournal(c, {
+      siteId: site,
+      date,
+      sourceType: "REVERSAL",
+      sourceId: input.partyId,
+      narration: `Customer removed, old balance cancelled: ${reason}`,
+      createdBy: owner.id,
+      approvedBy: owner.id,
+      reverses: ob!.jid,
+      lines: orig.rows.map((l) => ({
+        acct: l.code,
+        dr: l.credit !== "0.00" ? l.credit : undefined,
+        cr: l.debit !== "0.00" ? l.debit : undefined,
+        partyKind: l.party_kind ?? undefined,
+        partyId: l.party_id ?? undefined,
+      })),
+    });
+  }
+  await c.query("UPDATE parties SET active = false, remarks = $2 WHERE id = $1", [input.partyId, `Removed: ${reason}`.slice(0, 300)]);
+  return { name: p.name as string, openingCancelled: opening.toFixed(2) };
 }
 
 // ---------------------------------------------------------------------------

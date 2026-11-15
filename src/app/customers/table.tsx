@@ -19,6 +19,10 @@ export function CustomerTable({ rows }: { rows: Row[] }) {
     );
   const sum = (k: "opening" | "given" | "received" | "balance") => list.reduce((a, r) => a.plus(r[k]), new Decimal(0)).toFixed(2);
   const owing = list.filter((r) => !r.balance.startsWith("-") && r.balance !== "0.00").length;
+  // closing balance split like Tally: Debit = they owe us, Credit = advance / we owe them
+  const debit = list.filter((r) => !r.balance.startsWith("-")).reduce((a, r) => a.plus(r.balance), new Decimal(0));
+  const credit = list.filter((r) => r.balance.startsWith("-")).reduce((a, r) => a.plus(r.balance.slice(1)), new Decimal(0));
+  const signed = (v: string) => (v === "0.00" ? "" : v.startsWith("-") ? `${inr(v.slice(1))} Cr` : `${inr(v)} Dr`);
   return (
     <Panel
       title={`${list.length} customers · ${owing} owe money`}
@@ -38,17 +42,21 @@ export function CustomerTable({ rows }: { rows: Row[] }) {
     >
       <input className="inp mb-2 max-w-sm" placeholder="Search name / phone / car no." value={q} onChange={(e) => setQ(e.target.value)} />
       <div className="overflow-x-auto">
-        <table className="reg min-w-[48rem]">
+        <table className="reg min-w-[56rem]">
           <thead>
             <tr>
-              <th>Customer</th>
-              <th>Phone</th>
-              <th>Car no.</th>
-              <th className="text-right">Old balance</th>
-              <th className="text-right">Given</th>
-              <th className="text-right">Received</th>
-              <th className="text-right">Outstanding</th>
-              <th>Last entry</th>
+              <th rowSpan={2}>Customer</th>
+              <th rowSpan={2}>Phone</th>
+              <th rowSpan={2}>Car no.</th>
+              <th rowSpan={2} className="text-right">Old balance</th>
+              <th rowSpan={2} className="text-right">Given</th>
+              <th rowSpan={2} className="text-right">Received</th>
+              <th colSpan={2} className="border-b border-line text-center">Closing balance</th>
+              <th rowSpan={2}>Last entry</th>
+            </tr>
+            <tr>
+              <th className="text-right">Debit · बाकी</th>
+              <th className="text-right">Credit · एडवांस</th>
             </tr>
           </thead>
           <tbody>
@@ -61,23 +69,32 @@ export function CustomerTable({ rows }: { rows: Row[] }) {
                 </td>
                 <td className="text-muted">{r.phone ?? ""}</td>
                 <td className="text-xs text-muted">{r.vehicles ?? ""}</td>
-                <td className="num">{r.opening !== "0.00" ? inr(r.opening) : ""}</td>
+                <td className="num">{signed(r.opening)}</td>
                 <td className="num">{r.given !== "0.00" ? inr(r.given) : ""}</td>
                 <td className="num">{r.received !== "0.00" ? inr(r.received) : ""}</td>
-                <td className={`num font-semibold ${r.balance.startsWith("-") ? "text-green-700" : r.balance === "0.00" ? "text-muted" : "text-red-700"}`}>
-                  {r.balance.startsWith("-") ? `adv ${inr(r.balance.slice(1))}` : inr(r.balance)}
-                </td>
+                <td className="num font-semibold text-red-700">{!r.balance.startsWith("-") && r.balance !== "0.00" ? inr(r.balance) : ""}</td>
+                <td className="num font-semibold text-green-700">{r.balance.startsWith("-") ? inr(r.balance.slice(1)) : ""}</td>
                 <td className="whitespace-nowrap text-sm text-muted">{r.last_date ? niceDate(r.last_date) : ""}</td>
               </tr>
             ))}
           </tbody>
           <tfoot>
             <tr className="bg-soft font-semibold">
-              <td colSpan={3}>Total</td>
-              <td className="num">{inr(sum("opening"))}</td>
+              <td colSpan={3}>Grand total</td>
+              <td className="num">{signed(sum("opening"))}</td>
               <td className="num">{inr(sum("given"))}</td>
               <td className="num">{inr(sum("received"))}</td>
-              <td className="num">{inr(sum("balance"))}</td>
+              <td className="num text-red-700">{inr(debit.toFixed(2))}</td>
+              <td className="num text-green-700">{inr(credit.toFixed(2))}</td>
+              <td></td>
+            </tr>
+            <tr className="font-semibold">
+              <td colSpan={6} className="text-right text-sm text-muted">
+                Net udhari (debit − credit)
+              </td>
+              <td colSpan={2} className="num">
+                {signed(sum("balance"))}
+              </td>
               <td></td>
             </tr>
           </tfoot>
